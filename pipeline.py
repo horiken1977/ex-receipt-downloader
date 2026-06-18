@@ -30,10 +30,10 @@ class Pipeline:
         if config.in_maintenance_window():
             print("[Pipeline] 警告: 23:30〜5:30 はメンテ時間帯で領収書表示が利用できない可能性があります。")
 
-        # 保存済みセッション(state + 会員URL)が揃っていなければ手入力ログインが必要なので
-        # 最初から画面を表示する。
-        can_restore = config.STATE_FILE.exists() and config.MEMBERS_URL_FILE.exists()
-        await browser_manager.start(headless=None if can_restore else False)
+        # ログインは可視ブラウザが必要。保存済み cookie があれば、まずヘッドレスで
+        # メニュー自動到達を試し（有効なら無人で続行）、ダメなら可視で再試行する。
+        can_try_headless = config.STATE_FILE.exists() and config.HEADLESS
+        await browser_manager.start(headless=can_try_headless)
         try:
             page = await self._ensure_session_interactive()
             await self._download_all(page)

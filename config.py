@@ -34,10 +34,8 @@ HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 TIMEOUT = int(os.getenv("TIMEOUT", "30000"))
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
-# 保存済みログインセッション (storage_state)。存在すれば再ログイン不要。
+# 保存済みログインセッション (storage_state)。cookie が有効なら手入力を省ける。
 STATE_FILE = Path(os.getenv("STATE_FILE", str(BASE_DIR / ".auth" / "state.json")))
-# 手入力ログイン直後の会員トップ URL を控えておき、次回の再開時に使う。
-MEMBERS_URL_FILE = STATE_FILE.parent / "members_url.txt"
 
 # 一覧の各行に複数の日付（利用日・購入日など）が出る場合、ファイル名に使う日付を
 # どれにするかのインデックス。0=行の最初に出る日付。--debug でトークンをログ出力。

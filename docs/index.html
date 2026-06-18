@@ -71,17 +71,27 @@ const $ = id => document.getElementById(id);
   for(let mm=1; mm<=12; mm++){ const o=document.createElement("option"); o.value=mm; o.textContent=mm+"月"; if(mm===m)o.selected=true; $("month").appendChild(o); }
 })();
 
+// 宛名/サービスの既定は「初回だけ」反映し、ユーザーが入力したら以後は上書きしない。
+let configLoaded = false;
+let userEditedRecipient = false;
+$("recipient").addEventListener("input", () => { userEditedRecipient = true; });
+
+async function loadConfigOnce(){
+  if(configLoaded) return;
+  try{
+    const c = await (await fetch(HELPER+"/config",{cache:"no-store"})).json();
+    if(c.recipient && !userEditedRecipient) $("recipient").value = c.recipient;
+    if(c.service) $("service").value = c.service;
+    configLoaded = true;
+  }catch(e){}
+}
+
 async function checkHelper(){
   try{
-    const r = await fetch(HELPER + "/status", {cache:"no-store"});
-    const s = await r.json();
+    const s = await (await fetch(HELPER + "/status", {cache:"no-store"})).json();
     setBanner(true);
-    // 既定の宛名/サービスを取得して反映
-    try{ const c = await (await fetch(HELPER+"/config",{cache:"no-store"})).json();
-      if(c.recipient) $("recipient").value = c.recipient;
-      if(c.service) $("service").value = c.service;
-    }catch(e){}
-    if(s.running){ showRunning(); poll(); }
+    await loadConfigOnce();                 // ← 既定値の反映は1回だけ
+    if(s.running && !$("runBtn").disabled){ showRunning(); poll(); }
     return true;
   }catch(e){
     setBanner(false);
