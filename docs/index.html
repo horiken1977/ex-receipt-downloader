@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EX予約 領収書ダウンロード</title>
+<style>
+ :root{--blue:#0b5fff}
+ body{font-family:-apple-system,"Hiragino Kaku Gothic ProN",sans-serif;max-width:680px;margin:32px auto;padding:0 16px;color:#1d2330}
+ h1{font-size:21px;margin-bottom:4px}.sub{color:#667;font-size:13px;margin-top:0}
+ .card{border:1px solid #e2e6ee;border-radius:12px;padding:22px;box-shadow:0 1px 4px rgba(0,0,0,.05);margin-top:16px}
+ label{display:block;margin:14px 0 4px;font-weight:600;font-size:14px}
+ select,input[type=text]{width:100%;padding:10px;border:1px solid #ccd3df;border-radius:8px;font-size:15px;box-sizing:border-box}
+ .row{display:flex;gap:12px}.row>div{flex:1}
+ button{margin-top:22px;width:100%;padding:13px;background:var(--blue);color:#fff;border:0;border-radius:8px;font-size:16px;cursor:pointer}
+ button:disabled{background:#9bb4e8;cursor:not-allowed}
+ .note{background:#fff8e1;border:1px solid #ffe082;border-radius:8px;padding:12px;font-size:13px;line-height:1.7;margin-top:16px}
+ .ck{display:flex;align-items:center;gap:8px;margin-top:14px;font-size:14px}.ck input{width:auto}
+ #banner{padding:10px 12px;border-radius:8px;font-size:13.5px;margin-top:8px}
+ .ok{background:#e7f6ec;border:1px solid #b6e0c4;color:#176b38}
+ .ng{background:#fdecec;border:1px solid #f3b9b9;color:#9b1c1c}
+ #log{background:#0b1021;color:#d6e2ff;border-radius:10px;padding:14px;height:300px;overflow:auto;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;white-space:pre-wrap;margin-top:14px;display:none}
+ .files li{font-family:ui-monospace,monospace;font-size:12.5px}
+ .badge{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;margin-left:8px}
+ .run{background:#fff3cd;color:#7a5c00}.done{background:#d4edda;color:#155724}
+ a{color:var(--blue)}
+</style>
+</head>
+<body>
+<h1>🚄 EX予約 領収書ダウンロード <span id="state"></span></h1>
+<p class="sub">指定月の領収書をすべて PDF でデスクトップに保存します（スマートEX / エクスプレス予約）。</p>
+
+<div id="banner"></div>
+
+<div class="card" id="formCard">
+ <div class="row">
+  <div><label>年</label><select id="year"></select></div>
+  <div><label>月</label><select id="month"></select></div>
+ </div>
+ <label>宛名</label>
+ <input type="text" id="recipient" placeholder="宛名（20文字まで）" value="上様">
+ <label>サービス</label>
+ <select id="service">
+  <option value="smart-ex">スマートEX</option>
+  <option value="expy">エクスプレス予約</option>
+ </select>
+ <div class="ck"><input type="checkbox" id="debug"><label for="debug" style="margin:0;font-weight:400">デバッグ（各ステップのスクショ/HTMLを保存）</label></div>
+ <button id="runBtn">実行する</button>
+ <div class="note">
+  実行すると<b>お使いのPC上にChromiumが開きます</b>。会員ID・パスワードを手入力してログインしてください。
+  会員メニューに到達すると自動検知し、指定月の領収書をすべて<b>デスクトップ</b>にPDF保存します。<br>
+  ※ ログイン情報は保存しません。23:30〜5:30はサイトメンテナンスで利用できません。
+ </div>
+</div>
+
+<div id="log"></div>
+<div id="summary"></div>
+
+<script>
+// GitHub Pages から開いた場合はローカルの常駐ヘルパー(127.0.0.1:8765)を呼ぶ。
+// ローカルヘルパーから直接開いた場合は同一オリジン。
+const HELPER = location.hostname.endsWith("github.io") ? "http://127.0.0.1:8765" : "";
+
+const $ = id => document.getElementById(id);
+
+// 年・月の選択肢
+(function initSelectors(){
+  const now = new Date();
+  const y = now.getFullYear(), m = now.getMonth()+1;
+  for(const yy of [y, y-1]){ const o=document.createElement("option"); o.value=yy; o.textContent=yy+"年"; if(yy===y)o.selected=true; $("year").appendChild(o); }
+  for(let mm=1; mm<=12; mm++){ const o=document.createElement("option"); o.value=mm; o.textContent=mm+"月"; if(mm===m)o.selected=true; $("month").appendChild(o); }
+})();
+
+async function checkHelper(){
+  try{
+    const r = await fetch(HELPER + "/status", {cache:"no-store"});
+    const s = await r.json();
+    setBanner(true);
+    // 既定の宛名/サービスを取得して反映
+    try{ const c = await (await fetch(HELPER+"/config",{cache:"no-store"})).json();
+      if(c.recipient) $("recipient").value = c.recipient;
+      if(c.service) $("service").value = c.service;
+    }catch(e){}
+    if(s.running){ showRunning(); poll(); }
+    return true;
+  }catch(e){
+    setBanner(false);
+    return false;
+  }
+}
+
+function setBanner(up){
+  const b = $("banner");
+  if(up){ b.className="ok"; b.innerHTML="✅ ローカルヘルパー稼働中。実行できます。"; }
+  else{ b.className="ng"; b.innerHTML="⚠️ ローカルヘルパーが見つかりません。PCでヘルパーを起動してください"+
+    "（自動起動を設定済みなら数秒待って再読み込み）。直接開く場合は <a href='http://localhost:8765'>http://localhost:8765</a>。"; }
+}
+
+$("runBtn").onclick = async () => {
+  const body = new URLSearchParams({
+    year: $("year").value, month: $("month").value,
+    recipient: $("recipient").value, service: $("service").value,
+    debug: $("debug").checked ? "on" : ""
+  });
+  try{
+    const r = await fetch(HELPER + "/run", {method:"POST", body});
+    const j = await r.json();
+    if(j.error){ alert(j.error); return; }
+    showRunning(); poll();
+  }catch(e){
+    setBanner(false);
+    alert("ローカルヘルパーに接続できませんでした。ヘルパーを起動してください。");
+  }
+};
+
+function showRunning(){
+  $("runBtn").disabled = true;
+  $("state").innerHTML = '<span class="badge run">実行中…</span>';
+  $("log").style.display = "block";
+  $("summary").innerHTML = "";
+}
+
+async function poll(){
+  try{
+    const s = await (await fetch(HELPER+"/status",{cache:"no-store"})).json();
+    $("log").textContent = (s.log||[]).join("\n");
+    $("log").scrollTop = $("log").scrollHeight;
+    if(!s.running){
+      $("state").innerHTML = '<span class="badge done">完了</span>';
+      $("runBtn").disabled = false;
+      if(s.result){
+        const f=s.result.downloaded_files||[], fail=(s.result.failed||[]).length;
+        let h='<div class="files"><b>ダウンロード成功: '+f.length+'件</b>'+(fail?'（失敗 '+fail+'件）':'')+'<ul>';
+        f.forEach(p=>h+='<li>'+p+'</li>'); h+='</ul></div>';
+        $("summary").innerHTML=h;
+      }
+      return;
+    }
+  }catch(e){}
+  setTimeout(poll, 1500);
+}
+
+checkHelper();
+setInterval(()=>{ if(!$("runBtn").disabled) checkHelper(); }, 5000);
+</script>
+</body>
+</html>

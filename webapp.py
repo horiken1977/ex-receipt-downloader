@@ -16,13 +16,12 @@ EX予約 領収書ダウンロード — ローカルWeb UI。
 from __future__ import annotations
 
 import asyncio
-import datetime
 import os
 import sys
 import threading
 import webbrowser
 
-from flask import Flask, jsonify, redirect, render_template_string, request
+from flask import Flask, jsonify, request
 
 import config
 
@@ -31,6 +30,40 @@ app = Flask(__name__)
 # 実行状態（単一実行のみ許可）
 _state = {"running": False, "log": [], "result": None, "params": None}
 _lock = threading.Lock()
+
+
+# --- CORS / Private Network Access -----------------------------------------
+# GitHub Pages(https) の画面からローカルヘルパー(http://127.0.0.1) を呼べるようにする。
+# 許可オリジンは github.io と localhost のみ（無関係なサイトからの実行を防ぐ）。
+# macOS の AirPlay レシーバーがポート5000を占有するため 8765 を使う。
+PORT = int(os.getenv("EXRECEIPT_PORT", "8765"))
+
+
+def _origin_allowed(origin: str) -> bool:
+    if not origin:
+        return False
+    return (origin.endswith(".github.io")
+            or origin in (f"http://localhost:{PORT}", f"http://127.0.0.1:{PORT}"))
+
+
+@app.before_request
+def _handle_preflight():
+    from flask import request as _rq
+    if _rq.method == "OPTIONS":
+        return ("", 204)
+
+
+@app.after_request
+def _add_cors(resp):
+    from flask import request as _rq
+    origin = _rq.headers.get("Origin", "")
+    if _origin_allowed(origin):
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Vary"] = "Origin"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        resp.headers["Access-Control-Allow-Private-Network"] = "true"
+    return resp
 
 
 class _LogWriter:
@@ -87,140 +120,50 @@ def _run_pipeline(year: int, month: int, recipient: str, service: str, debug: bo
             _state["running"] = False
 
 
+_DOCS_INDEX = config.BASE_DIR / "docs" / "index.html"
+
+
 @app.route("/")
 def index():
-    today = datetime.date.today()
-    years = [today.year, today.year - 1]
-    return render_template_string(
-        INDEX_HTML,
-        years=years,
-        cur_year=today.year,
-        cur_month=today.month,
-        recipient=config.RECIPIENT_NAME,
-        service=config.SERVICE_TYPE,
-        running=_state["running"],
-    )
+    # GitHub Pages と同じ画面（docs/index.html）をローカルでも配信する。
+    try:
+        return _DOCS_INDEX.read_text(encoding="utf-8")
+    except Exception:
+        return "docs/index.html が見つかりません。", 500
 
 
-@app.route("/run", methods=["POST"])
+@app.route("/config")
+def get_config():
+    return jsonify(recipient=config.RECIPIENT_NAME, service=config.SERVICE_TYPE)
+
+
+@app.route("/run", methods=["POST", "OPTIONS"])
 def run():
     if _state["running"]:
-        return redirect("/progress")
+        return jsonify(started=False, running=True)
     try:
         year = int(request.form["year"])
         month = int(request.form["month"])
     except (KeyError, ValueError):
-        return redirect("/")
+        return jsonify(error="年と月を指定してください。"), 400
     recipient = (request.form.get("recipient") or config.RECIPIENT_NAME).strip()
     service = request.form.get("service", "smart-ex")
     debug = request.form.get("debug") == "on"
 
     t = threading.Thread(target=_run_pipeline, args=(year, month, recipient, service, debug), daemon=True)
     t.start()
-    return redirect("/progress")
+    return jsonify(started=True)
 
 
-@app.route("/progress")
-def progress():
-    return render_template_string(PROGRESS_HTML)
-
-
-@app.route("/status")
+@app.route("/status", methods=["GET", "OPTIONS"])
 def status():
     with _lock:
         return jsonify(running=_state["running"], log=_state["log"],
                        result=_state["result"], params=_state["params"])
 
 
-INDEX_HTML = """
-<!doctype html><html lang="ja"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>EX予約 領収書ダウンロード</title>
-<style>
- body{font-family:-apple-system,"Hiragino Kaku Gothic ProN",sans-serif;max-width:620px;margin:40px auto;padding:0 16px;color:#222}
- h1{font-size:20px} .card{border:1px solid #ddd;border-radius:10px;padding:20px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
- label{display:block;margin:14px 0 4px;font-weight:600;font-size:14px}
- select,input[type=text]{width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;font-size:15px;box-sizing:border-box}
- .row{display:flex;gap:12px}.row>div{flex:1}
- button{margin-top:20px;width:100%;padding:12px;background:#0b5fff;color:#fff;border:0;border-radius:8px;font-size:16px;cursor:pointer}
- .note{background:#fff8e1;border:1px solid #ffe082;border-radius:8px;padding:12px;font-size:13px;line-height:1.6;margin-top:16px}
- .ck{display:flex;align-items:center;gap:8px;margin-top:14px;font-size:14px}
- .ck input{width:auto}
-</style></head><body>
-<h1>🚄 EX予約 領収書ダウンロード</h1>
-<div class="card">
- <form method="post" action="/run">
-  <div class="row">
-   <div><label>年</label><select name="year">
-     {% for y in years %}<option value="{{y}}" {{'selected' if y==cur_year}}>{{y}}年</option>{% endfor %}
-   </select></div>
-   <div><label>月</label><select name="month">
-     {% for m in range(1,13) %}<option value="{{m}}" {{'selected' if m==cur_month}}>{{m}}月</option>{% endfor %}
-   </select></div>
-  </div>
-  <label>宛名</label>
-  <input type="text" name="recipient" value="{{recipient}}" placeholder="宛名（20文字まで）">
-  <label>サービス</label>
-  <select name="service">
-   <option value="smart-ex" {{'selected' if service=='smart-ex'}}>スマートEX</option>
-   <option value="expy" {{'selected' if service=='expy'}}>エクスプレス予約</option>
-  </select>
-  <div class="ck"><input type="checkbox" name="debug" id="debug"><label for="debug" style="margin:0;font-weight:400">デバッグ（各ステップのスクショ/HTMLを保存）</label></div>
-  <button type="submit">実行する</button>
- </form>
- <div class="note">
-  実行すると<b>このPC上にChromiumが開きます</b>。会員ID・パスワードを手入力してログインしてください。
-  会員メニューに到達すると自動検知し、指定月の領収書をすべて<b>デスクトップ</b>にPDF保存します。<br>
-  ※ ログイン情報は保存しません。23:30〜5:30はサイトメンテナンスで利用できません。
- </div>
-</div>
-</body></html>
-"""
-
-PROGRESS_HTML = """
-<!doctype html><html lang="ja"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>実行中… EX予約 領収書ダウンロード</title>
-<style>
- body{font-family:-apple-system,"Hiragino Kaku Gothic ProN",sans-serif;max-width:760px;margin:30px auto;padding:0 16px;color:#222}
- h1{font-size:18px} #log{background:#0b1021;color:#d6e2ff;border-radius:10px;padding:14px;height:50vh;overflow:auto;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;white-space:pre-wrap}
- .badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:13px}
- .run{background:#fff3cd;color:#7a5c00}.done{background:#d4edda;color:#155724}
- .files{margin-top:14px}.files li{font-family:ui-monospace,monospace;font-size:12.5px}
- a{color:#0b5fff}
-</style></head><body>
-<h1>EX予約 領収書ダウンロード <span id="badge" class="badge run">実行中…</span></h1>
-<div id="log">起動中…</div>
-<div id="summary"></div>
-<p style="margin-top:18px"><a href="/">← フォームに戻る</a></p>
-<script>
-async function tick(){
-  try{
-    const r = await fetch('/status'); const s = await r.json();
-    const log = document.getElementById('log');
-    log.textContent = (s.log||[]).join('\\n'); log.scrollTop = log.scrollHeight;
-    const badge = document.getElementById('badge');
-    if(!s.running){
-      badge.textContent = '完了'; badge.className='badge done';
-      if(s.result){
-        const f = s.result.downloaded_files||[]; const fail=(s.result.failed||[]).length;
-        let h = '<div class="files"><b>ダウンロード成功: '+f.length+'件</b>'+(fail?'（失敗 '+fail+'件）':'')+'<ul>';
-        f.forEach(p=>{h+='<li>'+p+'</li>';}); h+='</ul></div>';
-        document.getElementById('summary').innerHTML = h;
-      }
-      return; // 停止
-    }
-  }catch(e){}
-  setTimeout(tick, 1500);
-}
-tick();
-</script>
-</body></html>
-"""
-
-
 if __name__ == "__main__":
-    url = "http://127.0.0.1:5000"
+    url = f"http://127.0.0.1:{PORT}"
     print("=" * 56)
     print("EX予約 領収書ダウンロード Web UI")
     print(f"  ブラウザで {url} を開いてください")
@@ -231,4 +174,4 @@ if __name__ == "__main__":
             threading.Timer(1.0, lambda: webbrowser.open(url)).start()
         except Exception:
             pass
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    app.run(host="127.0.0.1", port=PORT, debug=False)

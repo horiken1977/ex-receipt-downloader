@@ -15,13 +15,32 @@
 
 ## Web UI（フォームから実行）
 
-```bash
-python3 webapp.py
-# → 自動で http://127.0.0.1:5000 が開く（開かなければ手動で開く）
-```
-
 年・月・宛名・サービスを選んで「実行する」を押すと、ローカルにブラウザが開きます。
 ログインすると指定月の領収書をすべてデスクトップに保存し、進捗が画面に表示されます。
+使い方は2通り:
+
+### A. ローカルだけで使う（最も簡単）
+```bash
+python3 webapp.py
+# → 自動で http://127.0.0.1:8765 が開く（開かなければ手動で開く）
+```
+
+### B. GitHub Pages の URL で画面を開く（常駐ヘルパー方式）
+画面を `https://<ユーザー名>.github.io/ex-receipt-downloader/` で開けるようにする方式です。
+**実行処理はこの場合もあなたのPCで動きます**（ページからローカル常駐ヘルパーを呼び出す）。
+
+1. リポジトリの **Settings → Pages → Source: Deploy from a branch → `main` / `/docs`** を保存
+   （数分で `https://<ユーザー名>.github.io/ex-receipt-downloader/` が公開）。
+2. ローカル常駐ヘルパーを自動起動に設定（PC起動時に `http://127.0.0.1:8765` で常駐）:
+   ```bash
+   # Finder で scripts/install_helper_autostart.command をダブルクリック、または:
+   bash scripts/install_helper_autostart.command
+   ```
+3. 上記 Pages の URL を **Chrome** で開く → 「✅ ローカルヘルパー稼働中」と出れば実行できます。
+
+> 常駐ヘルパーは `127.0.0.1` のみで待ち受け、許可オリジンは自分の `*.github.io` と
+> `localhost` だけ（CORS/Private Network Access で制限）。解除は
+> `scripts/uninstall_helper_autostart.command`。
 
 ## 仕組み（重要な前提）
 
@@ -38,15 +57,17 @@ python3 webapp.py
 ## 構成
 
 ```
-webapp.py               ローカルWeb UI（フォーム→実行→進捗表示）
+webapp.py               ローカルWeb UI / API（フォーム→実行→進捗、CORS対応）
+docs/index.html         GitHub Pages 用の画面（ローカルヘルパーを呼び出す静的UI）
+scripts/*.command       常駐ヘルパーの自動起動 設定/解除（macOS LaunchAgent）
 main.py                 CLI（引数解釈・設定上書き・--check）
 pipeline.py             決定論パイプライン（login→一覧→照会→逐次DL→集計）
 config.py               設定とセレクタの集約（SELECTORS）／利用可否判定
 browser_manager.py      単一ブラウザコンテキスト＋セッション(storage_state)／window.print無効化
 datetools.py            日本語日付の抽出・解析（ファイル名用）
-agents/login_agent.py   手入力ログイン／保存セッション再利用（会員ページを返す）
-agents/discovery_agent.py  会員メニュー→(ガイド画面)→一覧 到達・照会・行解析・ページ送り
-agents/download_agent.py   1件の領収書を 宛名入力→PDF化（デスクトップへ一意名で保存）
+agents/login_agent.py   手入力ログイン（自動検知）／保存セッション再利用
+agents/discovery_agent.py  会員メニュー→一覧 到達・照会(From/To)・領収書表示・戻る
+agents/download_agent.py   宛名入力→印刷ポップアップ(正式な領収書)をPDF化
 ```
 
 > 旧 `orchestrator.py`（LLM でツール順序を決める実装）は廃止しました。処理順は固定で
