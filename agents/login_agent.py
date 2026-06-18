@@ -38,12 +38,17 @@ async def ensure_session(service_cfg: dict) -> Page:
 
     print("\n" + "=" * 60)
     print("ログイン: 表示されたブラウザで会員ID・パスワードを手入力してください。")
-    print("会員メニューに到達すると自動検知して続行します（最大5分）。")
+    print("SMS認証（ワンタイムパスワード）が表示されたら、それも入力してください。")
+    print("会員メニュー（「ご利用履歴・領収書の発行」が見える画面）に到達すると")
+    print("自動検知して続行します（最大5分待機）。手動でEnterを押す必要はありません。")
     print("=" * 60)
 
     if not await _wait_for_menu(page, timeout_sec=300):
         await browser_manager.dump_debug_html(page, "03_after_login")
-        raise LoginError("会員メニューへの到達を検知できませんでした（タイムアウト）。")
+        raise LoginError(
+            "会員メニューへの到達を検知できませんでした（タイムアウト）。"
+            "ログイン後に会員メニュー（メインメニュー）まで進んでいるか確認してください。"
+        )
 
     await browser_manager.dump_debug_html(page, "03_after_login")
     print(f"[Login] 会員メニューに到達しました（URL: {page.url}）")
@@ -51,35 +56,39 @@ async def ensure_session(service_cfg: dict) -> Page:
 
 
 async def _wait_for_menu(page: Page, timeout_sec: int) -> bool:
-    """会員メニュー到達をポーリング検知。CLIでは Enter でも続行可。"""
-    import sys
-    import time
+    """会員メニュー（領収書メニューのタイルが出る画面）への到達をポーリング検知する。
 
-    enter_task = None
-    if sys.stdin and sys.stdin.isatty():
-        print("（自動検知されない場合は、このターミナルで Enter を押すと続行します）")
-        enter_task = asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)
+    過渡状態やエラー画面で先に進まないよう、Enter による強制続行は行わない。
+    """
+    import time
 
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
         if await _at_member_menu(page):
-            return True
-        if enter_task is not None and enter_task.done():
             return True
         await asyncio.sleep(1.5)
     return False
 
 
 async def _at_member_menu(page: Page) -> bool:
-    """会員メニュー(ClientService)に居り、画面遷移関数が使えるか。"""
+    """会員メニューに居るか: ClientService の URL ＋ cfEXPY_doAction ＋ 領収書メニュータイル。"""
     try:
         url = (page.url or "").lower()
     except Exception:
         return False
     if "clientservice" not in url:
         return False
-    # エラー/失効ページには cfEXPY_doAction が無い。これで誤検知を防ぐ。
+    # エラー/過渡ページには cfEXPY_doAction が無い。
     try:
-        return bool(await page.evaluate("typeof cfEXPY_doAction === 'function'"))
+        if not await page.evaluate("typeof cfEXPY_doAction === 'function'"):
+            return False
     except Exception:
         return False
+    # 「ご利用履歴・領収書の発行」等のメニュータイルが実際に表示されているか。
+    for text in config.SELECTORS["menu_receipt_link"]:
+        try:
+            if await page.locator(f"a:has-text('{text}')").count() > 0:
+                return True
+        except Exception:
+            continue
+    return False
