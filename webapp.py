@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import os
 import sys
 import threading
 import webbrowser
@@ -225,8 +226,9 @@ if __name__ == "__main__":
     print(f"  ブラウザで {url} を開いてください")
     print("  停止: Ctrl+C")
     print("=" * 56)
-    try:
-        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    except Exception:
-        pass
+    if os.getenv("EXRECEIPT_NO_OPEN") != "1":
+        try:
+            threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+        except Exception:
+            pass
     app.run(host="127.0.0.1", port=5000, debug=False)
