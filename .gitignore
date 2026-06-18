@@ -1,0 +1,18 @@
+# 秘匿情報
+.env
+.auth/
+state.json
+
+# 出力
+output/
+*.pdf
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / ローカル設定
+.DS_Store
+.claude/settings.local.json
