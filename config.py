@@ -28,7 +28,8 @@ DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 # --- 基本設定 -------------------------------------------------------------
 # ログインは常に「ブラウザを表示して手入力」。資格情報は保持しない。
 SERVICE_TYPE = os.getenv("SERVICE_TYPE", "smart-ex")
-RECIPIENT_NAME = os.getenv("RECIPIENT_NAME", "日本アイ・ビー・エム株式会社")
+# 既定の宛名。自分用の既定は .env の RECIPIENT_NAME で設定（.env は公開されない）。
+RECIPIENT_NAME = os.getenv("RECIPIENT_NAME", "上様")
 HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 TIMEOUT = int(os.getenv("TIMEOUT", "30000"))
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
