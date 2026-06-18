@@ -25,22 +25,30 @@ python3 webapp.py
 # → 自動で http://127.0.0.1:8765 が開く（開かなければ手動で開く）
 ```
 
-### B. GitHub Pages の URL で画面を開く（常駐ヘルパー方式）
+### B. GitHub Pages の URL で画面を開く（ローカルヘルパー方式）
 画面を `https://<ユーザー名>.github.io/ex-receipt-downloader/` で開けるようにする方式です。
-**実行処理はこの場合もあなたのPCで動きます**（ページからローカル常駐ヘルパーを呼び出す）。
+**実行処理はこの場合もあなたのPCで動きます**（ページからローカルのヘルパーを呼び出す）。
 
 1. リポジトリの **Settings → Pages → Source: Deploy from a branch → `main` / `/docs`** を保存
    （数分で `https://<ユーザー名>.github.io/ex-receipt-downloader/` が公開）。
-2. ローカル常駐ヘルパーを自動起動に設定（PC起動時に `http://127.0.0.1:8765` で常駐）:
-   ```bash
-   # Finder で scripts/install_helper_autostart.command をダブルクリック、または:
-   bash scripts/install_helper_autostart.command
+2. ローカルヘルパーを起動（`http://127.0.0.1:8765` で待ち受け）:
+   ```
+   Finder で scripts/start_helper.command をダブルクリック（ウィンドウは開いたまま）
    ```
 3. 上記 Pages の URL を **Chrome** で開く → 「✅ ローカルヘルパー稼働中」と出れば実行できます。
+   （`http://localhost:8765` を直接開いても同じ画面が使えます）
 
-> 常駐ヘルパーは `127.0.0.1` のみで待ち受け、許可オリジンは自分の `*.github.io` と
-> `localhost` だけ（CORS/Private Network Access で制限）。解除は
-> `scripts/uninstall_helper_autostart.command`。
+> ヘルパーは `127.0.0.1` のみで待ち受け、許可オリジンは自分の `*.github.io` と `localhost`
+> だけ（CORS/Private Network Access で制限）。**Chrome 推奨**（Safari はローカル接続を
+> ブロックする場合あり）。
+
+**ログイン時の自動起動にしたい場合**: `システム設定 → 一般 → ログイン項目` に
+`scripts/start_helper.command` を追加してください（ログイン時にヘルパーが起動）。
+
+> 補足: macOS のプライバシー保護(TCC)により、**バックグラウンド常駐(LaunchAgent)では
+> OneDrive 等の保護フォルダ内のファイルを起動できません**。そのため上記のダブルクリック/
+> ログイン項目方式（=あなたの権限で起動）を使います。完全な常時バックグラウンド化を望む
+> 場合は、リポジトリを `~/ex-receipt-downloader` など保護対象外の場所に置いて運用してください。
 
 ## 仕組み（重要な前提）
 
@@ -59,7 +67,7 @@ python3 webapp.py
 ```
 webapp.py               ローカルWeb UI / API（フォーム→実行→進捗、CORS対応）
 docs/index.html         GitHub Pages 用の画面（ローカルヘルパーを呼び出す静的UI）
-scripts/*.command       常駐ヘルパーの自動起動 設定/解除（macOS LaunchAgent）
+scripts/start_helper.command  ローカルヘルパーをダブルクリック起動（macOS）
 main.py                 CLI（引数解釈・設定上書き・--check）
 pipeline.py             決定論パイプライン（login→一覧→照会→逐次DL→集計）
 config.py               設定とセレクタの集約（SELECTORS）／利用可否判定
