@@ -174,4 +174,13 @@ if __name__ == "__main__":
             threading.Timer(1.0, lambda: webbrowser.open(url)).start()
         except Exception:
             pass
-    app.run(host="127.0.0.1", port=PORT, debug=False)
+    try:
+        app.run(host="127.0.0.1", port=PORT, debug=False)
+    except OSError as e:
+        print(f"\n[起動失敗] ポート {PORT} は既に使用中の可能性があります: {e}")
+        if sys.platform == "win32":
+            print(f'  解放: コマンドプロンプトで  netstat -ano | findstr :{PORT}  → taskkill /F /PID <番号>')
+        else:
+            print(f"  解放: ターミナルで  lsof -ti:{PORT} | xargs kill")
+        print(f"  もしくは別ポートで起動:  EXRECEIPT_PORT=8780 で再実行（画面側の接続先も変わる点に注意）")
+        sys.exit(1)
