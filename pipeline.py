@@ -30,26 +30,14 @@ class Pipeline:
         if config.in_maintenance_window():
             print("[Pipeline] 警告: 23:30〜5:30 はメンテ時間帯で領収書表示が利用できない可能性があります。")
 
-        # ログインは可視ブラウザが必要。保存済み cookie があれば、まずヘッドレスで
-        # メニュー自動到達を試し（有効なら無人で続行）、ダメなら可視で再試行する。
-        can_try_headless = config.STATE_FILE.exists() and config.HEADLESS
-        await browser_manager.start(headless=can_try_headless)
+        # ログインは手入力のため、常に画面を表示して実行する。
+        await browser_manager.start(headless=False)
         try:
-            page = await self._ensure_session_interactive()
+            page = await login_agent.ensure_session(self.service_cfg)
             await self._download_all(page)
         finally:
             await browser_manager.stop()
         return self._result()
-
-    async def _ensure_session_interactive(self):
-        """ログイン確立。保存セッションが切れていてヘッドレスなら画面を出して再試行。"""
-        try:
-            return await login_agent.ensure_session(self.service_cfg)
-        except login_agent.ManualLoginRequired:
-            print("[Pipeline] 保存済みセッションが無効です。ログイン画面を表示します。")
-            await browser_manager.stop()
-            await browser_manager.start(load_state=False, headless=False)
-            return await login_agent.ensure_session(self.service_cfg)
 
     async def _download_all(self, page) -> None:
         await discovery_agent.open_and_filter(page, self.year, self.month)

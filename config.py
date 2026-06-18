@@ -34,9 +34,6 @@ HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 TIMEOUT = int(os.getenv("TIMEOUT", "30000"))
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
-# 保存済みログインセッション (storage_state)。cookie が有効なら手入力を省ける。
-STATE_FILE = Path(os.getenv("STATE_FILE", str(BASE_DIR / ".auth" / "state.json")))
-
 # 一覧の各行に複数の日付（利用日・購入日など）が出る場合、ファイル名に使う日付を
 # どれにするかのインデックス。0=行の最初に出る日付。--debug でトークンをログ出力。
 TRAVEL_DATE_INDEX = int(os.getenv("TRAVEL_DATE_INDEX", "0"))

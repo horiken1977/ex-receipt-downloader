@@ -11,4 +11,12 @@ echo "   画面(GitHub Pages): https://horiken1977.github.io/ex-receipt-download
 echo "   終了: このウィンドウで Ctrl+C、またはウィンドウを閉じる"
 echo "============================================================"
 
+# 既に起動中のヘルパー(ポート8765)があれば止めてから起動する（二重起動防止）。
+EXIST="$(lsof -ti:8765 2>/dev/null)"
+if [ -n "$EXIST" ]; then
+  echo "既存のヘルパー(PID: $EXIST)を停止します..."
+  kill $EXIST 2>/dev/null
+  sleep 1
+fi
+
 exec python3 webapp.py

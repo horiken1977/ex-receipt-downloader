@@ -1,11 +1,11 @@
 """
 Playwright のブラウザ/コンテキストを 1 つだけ管理する。
 
-旧実装は処理ごとに新コンテキストを作って cookie を共有していたが、
-JR系サイトはサーバ側に画面遷移状態を持つため、同一セッションを
-逐次的に使い回す方が安全。ここでは単一コンテキストを使う。
+JR系サイトはサーバ側に画面遷移状態を持つため、単一コンテキストを逐次的に使う。
 
-ログインセッションは storage_state(JSON) に保存し、次回起動時に再利用する。
+セッションの保存・再利用(storage_state)は行わない。古い cookie を読み込むと
+ログイン時にサーバが「お取扱いできませんでした」エラーになるため、毎回まっさらな
+コンテキストでログインする。
 """
 from __future__ import annotations
 
@@ -39,10 +39,10 @@ _CONTEXT_KWARGS = dict(
 )
 
 
-async def start(load_state: bool = True, headless: Optional[bool] = None) -> BrowserContext:
-    """ブラウザを起動し、単一コンテキストを返す。保存済みセッションがあれば読み込む。
+async def start(headless: Optional[bool] = None) -> BrowserContext:
+    """ブラウザを起動し、まっさらな単一コンテキストを返す（cookie再利用なし）。
 
-    headless を省略すると config.HEADLESS に従う。手入力ログイン時は呼び出し側が
+    headless を省略すると config.HEADLESS に従う。ログイン時は呼び出し側が
     headless=False を指定する。
     """
     global _playwright, _browser, _context, _headless
@@ -52,13 +52,7 @@ async def start(load_state: bool = True, headless: Optional[bool] = None) -> Bro
         headless=_headless,
         args=["--disable-blink-features=AutomationControlled"],
     )
-
-    kwargs = dict(_CONTEXT_KWARGS)
-    if load_state and config.STATE_FILE.exists():
-        kwargs["storage_state"] = str(config.STATE_FILE)
-        print(f"[Browser] 保存済みセッションを読み込みました: {config.STATE_FILE}")
-
-    _context = await _browser.new_context(**kwargs)
+    _context = await _browser.new_context(**_CONTEXT_KWARGS)
     _context.set_default_timeout(config.TIMEOUT)
     # 「印刷」操作で OS の印刷ダイアログが開くと自動化が固まるため無効化しておく。
     # 領収書PDFは Page.printToPDF で別途生成する。
@@ -77,15 +71,6 @@ def is_headless() -> bool:
 
 async def new_page() -> Page:
     return await context().new_page()
-
-
-async def save_state() -> None:
-    """現在のセッション cookie/localStorage を storage_state に保存する。"""
-    if _context is None:
-        return
-    config.STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    await _context.storage_state(path=str(config.STATE_FILE))
-    print(f"[Browser] セッションを保存しました: {config.STATE_FILE}")
 
 
 async def stop() -> None:
