@@ -18,7 +18,14 @@
 - **Python 3.9 以上**
   - Windows: https://www.python.org/downloads/ から導入（インストール時に **「Add python.exe to PATH」にチェック**）
   - macOS: 標準の `python3`（または Homebrew 等）
-- リポジトリの取得: `git clone` するか、GitHub の **Code → Download ZIP** で展開
+
+### ファイルの入手と準備
+
+1. このページ上部の**緑色の `< > Code` ボタン → `Download ZIP`** をクリックして全ファイルをダウンロードし、
+   ZIP を解凍します（置き場所はどこでも構いません）。※ `git clone` でもOKです。
+2. **ターミナル（Mac）／コマンドプロンプト（Windows）** を開き、解凍したフォルダへ移動します。
+   - 移動は `cd ` と入力してから、解凍した**フォルダをウィンドウにドラッグ＆ドロップ**して Enter すると簡単です。
+   - 例（Mac）: `cd ~/Downloads/ex-receipt-downloader-main`
 
 ## 2. セットアップ（初回のみ）
 
@@ -31,7 +38,12 @@
 | macOS | `scripts/setup.command`（初回は右クリック→「開く」） |
 | Linux | `bash scripts/setup.sh` |
 
-**手動で行う場合**
+> **ダブルクリックでうまくいかない場合**は、上記ファイルを**ターミナル（またはコマンドプロンプト）に
+> 直接ドラッグ＆ドロップして Enter** を押すと実行できます。
+> これで依存パッケージと Playwright 用 Chromium（各OS向け・約150MB）がインストールされます。
+
+**手動で行う場合**（上記でうまくいかないとき）
+お使いのOSの行をコピペして実行してください。
 ```bash
 # Windows:  py -3 -m pip install -r requirements.txt && py -3 -m playwright install chromium
 # macOS  :  python3 -m pip install -r requirements.txt && python3 -m playwright install chromium
@@ -40,13 +52,17 @@
 
 ## 3. 使い方（Web UI）
 
-1. **ヘルパーを起動**（下表のファイルをダブルクリック）。`http://localhost:8765` が自動で開きます。
+1. **ヘルパーを起動**（下表のファイルをダブルクリック）。Webブラウザが起動し、
+   `http://localhost:8765` の画面が自動で開きます。
 
    | OS | 実行するファイル |
    |---|---|
    | Windows | `scripts\start_helper.bat` |
    | macOS | `scripts/start_helper.command` |
    | Linux | `bash scripts/start_helper.sh` |
+
+   > **ダブルクリックでうまくいかない場合**は、上記ファイルを**ターミナル（またはコマンドプロンプト）に
+   > 直接ドラッグ＆ドロップして Enter** を押してください。Webブラウザが起動します。
 
 2. 画面で **年・月・宛名・サービス** を選び、**「実行する」** を押す。
 3. **別ウィンドウでブラウザが開く** → **会員ID・パスワード → SMS認証** を入力し、会員メニューまで進む。
