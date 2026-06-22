@@ -59,15 +59,17 @@ SEL = {
     "filter_apply": ["絞り込む", "絞込", "この条件で絞り込む", "検索"],
     "period_start_keys": ["from", "start", "開始", "fromDate", "startDate"],
     "period_end_keys": ["to", "end", "終了", "toDate", "endDate"],
+    # 注意: 緩い「領収書」はマイページのメニュー文言に誤マッチするため入れない。
     "receipt_button": [
-        "ご利用兼領収書を発行する", "ご利用兼領収書", "領収書を発行", "領収書発行", "領収書",
+        "ご利用兼領収書を発行する", "ご利用兼領収書", "領収書を発行する", "領収書を発行", "領収書発行",
     ],
     "pager_next": ["次へ", "次の", ">"],
 }
 
 
-async def run_flow(year: int, month: int, recipient: str) -> tuple[List[str], List[str]]:
-    """実Chromeに CDP 接続して対象月の領収書を全件DLし、(成功パス, 失敗ラベル) を返す。"""
+async def run_flow(from_year: int, from_month: int, to_year: int, to_month: int,
+                   recipient: str) -> tuple[List[str], List[str]]:
+    """実Chromeに CDP 接続し、From年月〜To年月の領収書を全件DLして (成功, 失敗) を返す。"""
     downloaded: List[str] = []
     failed: List[str] = []
 
@@ -85,7 +87,7 @@ async def run_flow(year: int, month: int, recipient: str) -> tuple[List[str], Li
             print("[えきねっと] 申込履歴一覧に到達できませんでした。--debug の HTML を確認してください。")
             return downloaded, failed
 
-        await _apply_filter(page, year, month)
+        await _apply_filter(page, from_year, from_month, to_year, to_month)
         downloaded, failed = await _download_receipts(page)
     finally:
         try:
@@ -236,6 +238,8 @@ async def _reach_history(page: Page) -> bool:
         stuck = stuck + 1 if url == last_url else 0
         last_url = url
 
+        if await _is_history_page(page):
+            return True
         # JREID を先に判定（URLが確実）。規約合意の誤判定を避ける。
         if SEL["url_jreid"] in url or (stuck < 2 and await _is_jreid_page(page)):
             await _handle_jreid(page)
@@ -243,9 +247,8 @@ async def _reach_history(page: Page) -> bool:
         if SEL["url_agreement"] in url or (stuck < 2 and await _is_agreement_page(page)):
             await _handle_agreement(page)
             continue
-        if await _is_history_page(page):
-            return True
-        if stuck < 3 and await _click_text(page, SEL["history_menu"]):
+        # マイページ等 → 申込履歴へ（data-urlkey=HistoryList が確実）
+        if stuck < 4 and await _click_history_menu(page):
             await page.wait_for_load_state("domcontentloaded", timeout=config.TIMEOUT)
             await page.wait_for_timeout(1800)
             continue
@@ -253,12 +256,24 @@ async def _reach_history(page: Page) -> bool:
     return await _is_history_page(page)
 
 
+async def _click_history_menu(page: Page) -> bool:
+    for css in ("a[data-urlkey='HistoryList']", "a[data-urlkey*='HistoryList']",
+                "[data-urlkey*='HistoryList']"):
+        try:
+            el = page.locator(css).first
+            if await el.count() > 0:
+                await el.click()
+                return True
+        except Exception:
+            continue
+    return await _click_text(page, SEL["history_menu"])
+
+
 async def _is_history_page(page: Page) -> bool:
+    # 申込履歴一覧の URL、または「ご利用兼領収書を発行する」等の具体ボタンがあれば履歴。
     if SEL["url_history"] in (page.url or "").lower():
         return True
-    if await _has_receipt_buttons(page):
-        return True
-    return await _find_text_locator(page, SEL["tab_used_cancelled"]) is not None
+    return await _has_receipt_buttons(page)
 
 
 async def _is_agreement_page(page: Page) -> bool:
@@ -311,15 +326,22 @@ async def _handle_jreid(page: Page) -> None:
 
 
 # --- 6) 絞り込み ----------------------------------------------------------
-async def _apply_filter(page: Page, year: int, month: int) -> None:
+async def _apply_filter(page: Page, from_year: int, from_month: int,
+                        to_year: int, to_month: int) -> None:
+    # 履歴一覧がSPA描画されるのを待つ
+    for _ in range(20):
+        if await _has_receipt_buttons(page) or await _find_text_locator(page, SEL["tab_used_cancelled"]) is not None:
+            break
+        await page.wait_for_timeout(500)
     await _dump(page, "ek_06_history")
+
     await _click_text(page, SEL["tab_used_cancelled"])
     await page.wait_for_timeout(1200)
     await _click_text(page, SEL["filter_expand"])
     await page.wait_for_timeout(800)
     await _click_text(page, SEL["filter_show_all"])
 
-    start, end = _month_range(year, month)
+    start, end = _date_range(from_year, from_month, to_year, to_month)
     print(f"[えきねっと] 期間: {start} 〜 {end}")
     await _fill_period(page, start, end)
 
@@ -440,10 +462,11 @@ async def _print_to_pdf(page: Page) -> bytes:
 
 
 # --- helpers --------------------------------------------------------------
-def _month_range(year: int, month: int) -> tuple[str, str]:
-    last = calendar.monthrange(year, month)[1]
-    start = datetime.date(year, month, 1)
-    end = datetime.date(year, month, last)
+def _date_range(from_year: int, from_month: int, to_year: int, to_month: int) -> tuple[str, str]:
+    """From年月の初日 〜 To年月の末日（当月は今日でクランプ）。"""
+    last = calendar.monthrange(to_year, to_month)[1]
+    start = datetime.date(from_year, from_month, 1)
+    end = datetime.date(to_year, to_month, last)
     today = datetime.date.today()
     if end > today:
         end = today

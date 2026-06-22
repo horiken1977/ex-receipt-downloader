@@ -34,8 +34,12 @@
 
 <div class="card" id="formCard">
  <div class="row">
-  <div><label>年</label><select id="year"></select></div>
-  <div><label>月</label><select id="month"></select></div>
+  <div><label>From 年</label><select id="from_year"></select></div>
+  <div><label>From 月</label><select id="from_month"></select></div>
+ </div>
+ <div class="row">
+  <div><label>To 年</label><select id="to_year"></select></div>
+  <div><label>To 月</label><select id="to_month"></select></div>
  </div>
  <label>宛名</label>
  <input type="text" id="recipient" placeholder="宛名（20文字まで）" value="上様">
@@ -49,7 +53,8 @@
  <button id="runBtn">実行する</button>
  <div class="note">
   実行すると<b>お使いのPC上にChromiumが開きます</b>。会員ID・パスワードを手入力してログインしてください。
-  会員メニューに到達すると自動検知し、指定月の領収書をすべて<b>デスクトップ</b>にPDF保存します。<br>
+  会員メニューに到達すると自動検知し、<b>From年月〜To年月</b>の領収書をすべて<b>デスクトップ</b>に保存します。<br>
+  （えきねっとは Akamai 対策のため実Chromeで動作。単月なら From と To を同じにしてください）<br>
   ※ ログイン情報は保存しません。23:30〜5:30はサイトメンテナンスで利用できません。
  </div>
 </div>
@@ -64,12 +69,16 @@ const HELPER = location.hostname.endsWith("github.io") ? "http://127.0.0.1:8765"
 
 const $ = id => document.getElementById(id);
 
-// 年・月の選択肢
+// 年・月の選択肢（From/To）
 (function initSelectors(){
   const now = new Date();
   const y = now.getFullYear(), m = now.getMonth()+1;
-  for(const yy of [y, y-1]){ const o=document.createElement("option"); o.value=yy; o.textContent=yy+"年"; if(yy===y)o.selected=true; $("year").appendChild(o); }
-  for(let mm=1; mm<=12; mm++){ const o=document.createElement("option"); o.value=mm; o.textContent=mm+"月"; if(mm===m)o.selected=true; $("month").appendChild(o); }
+  for(const idY of ["from_year","to_year"]){
+    for(const yy of [y, y-1, y-2]){ const o=document.createElement("option"); o.value=yy; o.textContent=yy+"年"; if(yy===y)o.selected=true; $(idY).appendChild(o); }
+  }
+  for(const idM of ["from_month","to_month"]){
+    for(let mm=1; mm<=12; mm++){ const o=document.createElement("option"); o.value=mm; o.textContent=mm+"月"; if(mm===m)o.selected=true; $(idM).appendChild(o); }
+  }
 })();
 
 // 宛名/サービスの既定は「初回だけ」反映し、ユーザーが入力したら以後は上書きしない。
@@ -109,7 +118,8 @@ function setBanner(up){
 
 $("runBtn").onclick = async () => {
   const body = new URLSearchParams({
-    year: $("year").value, month: $("month").value,
+    from_year: $("from_year").value, from_month: $("from_month").value,
+    to_year: $("to_year").value, to_month: $("to_month").value,
     recipient: $("recipient").value, service: $("service").value,
     debug: $("debug").checked ? "on" : ""
   });

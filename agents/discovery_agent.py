@@ -24,19 +24,20 @@ import config
 import datetools
 
 
-def month_range(year: int, month: int) -> tuple[str, str]:
-    """対象月の初日・末日(YYYY/MM/DD)。当月は末日を今日でクランプ。"""
-    last_day = calendar.monthrange(year, month)[1]
-    start = datetime.date(year, month, 1)
-    end = datetime.date(year, month, last_day)
+def date_range(from_year: int, from_month: int, to_year: int, to_month: int) -> tuple[str, str]:
+    """From年月の初日 〜 To年月の末日(YYYY/MM/DD)。当月は末日を今日でクランプ。"""
+    last_day = calendar.monthrange(to_year, to_month)[1]
+    start = datetime.date(from_year, from_month, 1)
+    end = datetime.date(to_year, to_month, last_day)
     today = datetime.date.today()
     if end > today:
         end = today
     return start.strftime("%Y/%m/%d"), end.strftime("%Y/%m/%d")
 
 
-async def open_and_filter(page: Page, year: int, month: int) -> None:
-    """会員メニュー→一覧へ到達し、対象月をプルダウンで選んで照会する。"""
+async def open_and_filter(page: Page, from_year: int, from_month: int,
+                          to_year: int, to_month: int) -> None:
+    """会員メニュー→一覧へ到達し、From年月初日〜To年月末日をプルダウンで選んで照会する。"""
     reached = await _navigate_to_list(page)
     if not reached:
         await browser_manager.take_debug_screenshot(page, "04b_list_not_reached")
@@ -44,8 +45,8 @@ async def open_and_filter(page: Page, year: int, month: int) -> None:
         print("[Discovery] 一覧画面に到達できませんでした。--debug の HTML を確認し "
               "SELECTORS['menu_receipt_link'] を調整してください。")
 
-    print(f"[Discovery] 照会対象: {year}年{month:02d}月")
-    await _set_date_filter(page, year, month)
+    print(f"[Discovery] 照会対象: {from_year}年{from_month:02d}月 〜 {to_year}年{to_month:02d}月")
+    await _set_date_filter(page, from_year, from_month, to_year, to_month)
     await browser_manager.take_debug_screenshot(page, "05_receipt_filtered")
     await browser_manager.dump_debug_html(page, "05_receipt_filtered")
 
@@ -75,7 +76,8 @@ async def click_receipt(page: Page, index: int) -> bool:
     return True
 
 
-async def return_to_list(page: Page, year: int, month: int) -> bool:
+async def return_to_list(page: Page, from_year: int, from_month: int,
+                         to_year: int, to_month: int) -> bool:
     """明細ページから一覧へ戻る。戻るボタン→ブラウザバック→再照会の順で試す。"""
     # 1) 明細ページの「戻る」系ボタン
     for text in ["一覧へ戻る", "ご利用履歴に戻る", "ご利用履歴へ戻る", "戻る"]:
@@ -94,7 +96,7 @@ async def return_to_list(page: Page, year: int, month: int) -> bool:
     except Exception:
         pass
     # 3) 最終手段: メニューから再照会（ページ位置は1ページ目に戻る点に注意）
-    await open_and_filter(page, year, month)
+    await open_and_filter(page, from_year, from_month, to_year, to_month)
     return await _has_receipt_buttons(page)
 
 
@@ -170,15 +172,17 @@ async def _has_month_pulldown(page: Page) -> bool:
 
 
 # --- 照会期間の入力（From/To 各 年月+日 の4プルダウン） -------------------
-async def _set_date_filter(page: Page, year: int, month: int) -> None:
-    """照会期間を「対象月の初日〜末日」に設定して再検索する。
+async def _set_date_filter(page: Page, from_year: int, from_month: int,
+                           to_year: int, to_month: int) -> None:
+    """照会期間を「From年月の初日 〜 To年月の末日」に設定して再検索する。
 
     実サイト: sel-1=From年月, sel-2=From日, sel-3=To年月, sel-4=To日。
     名前に依存せず、選択肢の内容で「年月select」「日select」を判別し、出現順に
     From→To として設定する。
     """
-    ym_label = f"{year}年{month}月"
-    last = calendar.monthrange(year, month)[1]
+    from_ym = f"{from_year}年{from_month}月"
+    to_ym = f"{to_year}年{to_month}月"
+    last = calendar.monthrange(to_year, to_month)[1]
 
     selects = page.locator("select")
     n = await selects.count()
@@ -193,15 +197,15 @@ async def _set_date_filter(page: Page, year: int, month: int) -> None:
 
     done = False
     if len(ym_idx) >= 2 and len(day_idx) >= 2:
-        a = await _select_label(selects.nth(ym_idx[0]), ym_label)       # From 年月
+        a = await _select_label(selects.nth(ym_idx[0]), from_ym)        # From 年月
         b = await _select_label(selects.nth(day_idx[0]), "1日")          # From 日
-        c = await _select_label(selects.nth(ym_idx[1]), ym_label)       # To 年月
+        c = await _select_label(selects.nth(ym_idx[1]), to_ym)          # To 年月
         d = await _select_label(selects.nth(day_idx[1]), f"{last}日")    # To 日
         done = a and b and c and d
         if done:
-            print(f"[Discovery] 照会期間設定: {ym_label}1日 〜 {ym_label}{last}日")
+            print(f"[Discovery] 照会期間設定: {from_ym}1日 〜 {to_ym}{last}日")
     elif ym_idx:
-        done = await _select_label(selects.nth(ym_idx[0]), ym_label)
+        done = await _select_label(selects.nth(ym_idx[0]), from_ym)
 
     if not done:
         await browser_manager.dump_debug_html(page, "05a_filter_not_found")

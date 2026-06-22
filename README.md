@@ -77,13 +77,16 @@
 # 設定と照会期間・利用可否の確認のみ（ブラウザを起動しない）
 python3 main.py 2026/05 --check
 
-# 通常実行：ブラウザが開く → ID/PW＋SMS認証を入力 → 会員メニュー到達で自動継続
+# 通常実行（単月）：ブラウザが開く → ログイン → 会員メニュー到達で自動継続
 python3 main.py 2026/05
 
+# 期間指定（From年月 〜 To年月）：From月初日〜To月末日が対象
+python3 main.py 2026/03 2026/05
+python3 main.py --from 2026/03 --to 2026/05
+
 # 別指定・オプション
-python3 main.py --year 2026 --month 5
 python3 main.py 2026/05 --service expy --recipient "株式会社○○"
-python3 main.py 2026/05 --debug        # 各ステップのスクショ/HTMLを output/ に保存
+python3 main.py 2026/05 --service eki-net --debug   # えきねっと
 ```
 > Windows は `python` / `py -3`、macOS/Linux は `python3` を使ってください。
 

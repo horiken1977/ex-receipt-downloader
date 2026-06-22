@@ -90,12 +90,13 @@ class _LogWriter:
                 pass
 
 
-def _run_pipeline(year: int, month: int, recipient: str, service: str, debug: bool):
+def _run_pipeline(fy: int, fm: int, ty: int, tm: int, recipient: str, service: str, debug: bool):
     from pipeline import Pipeline  # playwright 依存をここで読む
 
     with _lock:
         _state.update(running=True, log=[], result=None,
-                      params={"year": year, "month": month, "recipient": recipient, "service": service})
+                      params={"from_year": fy, "from_month": fm, "to_year": ty, "to_month": tm,
+                              "recipient": recipient, "service": service})
 
     config.SERVICE_TYPE = service
     config.RECIPIENT_NAME = recipient
@@ -105,11 +106,14 @@ def _run_pipeline(year: int, month: int, recipient: str, service: str, debug: bo
     old_stdout = sys.stdout
     sys.stdout = _LogWriter(old_stdout)
     try:
-        avail = config.check_month_available(year, month)
-        if not avail.ok:
+        # 利用可否チェックは JR東海系のみ（To年月で判定）
+        avail = config.check_month_available(ty, tm)
+        if service in config.JR_CENTRAL_SERVICES and not avail.ok:
             print(f"[Web] 中止: {avail.reason}")
         else:
-            result = asyncio.run(Pipeline(year=year, month=month).run())
+            result = asyncio.run(
+                Pipeline(from_year=fy, from_month=fm, to_year=ty, to_month=tm).run()
+            )
             with _lock:
                 _state["result"] = result
     except Exception as e:
@@ -142,15 +146,17 @@ def run():
     if _state["running"]:
         return jsonify(started=False, running=True)
     try:
-        year = int(request.form["year"])
-        month = int(request.form["month"])
+        fy = int(request.form["from_year"])
+        fm = int(request.form["from_month"])
+        ty = int(request.form.get("to_year") or fy)
+        tm = int(request.form.get("to_month") or fm)
     except (KeyError, ValueError):
-        return jsonify(error="年と月を指定してください。"), 400
+        return jsonify(error="From/To の年月を指定してください。"), 400
     recipient = (request.form.get("recipient") or config.RECIPIENT_NAME).strip()
     service = request.form.get("service", "smart-ex")
     debug = request.form.get("debug") == "on"
 
-    t = threading.Thread(target=_run_pipeline, args=(year, month, recipient, service, debug), daemon=True)
+    t = threading.Thread(target=_run_pipeline, args=(fy, fm, ty, tm, recipient, service, debug), daemon=True)
     t.start()
     return jsonify(started=True)
 
