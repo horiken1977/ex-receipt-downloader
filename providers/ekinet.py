@@ -34,6 +34,7 @@ from playwright.async_api import Page, async_playwright
 
 import browser_manager
 import config
+import datetools
 
 CDP_PORT = 9222
 CDP_URL = f"http://127.0.0.1:{CDP_PORT}"
@@ -56,16 +57,16 @@ SEL = {
         "確認・払戻・領収書",
         "申込履歴", "購入履歴", "ご利用履歴",
     ],
-    "tab_used_cancelled": ["乗車/取消済の旅程", "乗車・取消済の旅程", "乗車/取消済", "乗車・取消済"],
-    "filter_expand": ["表示内容を絞り込む", "絞り込み条件", "絞り込み"],
-    "filter_show_all": ["すべて表示", "すべて", "全て表示", "全て"],
-    "filter_apply": ["絞り込む", "絞込", "この条件で絞り込む", "検索"],
-    "period_start_keys": ["from", "start", "開始", "fromDate", "startDate"],
-    "period_end_keys": ["to", "end", "終了", "toDate", "endDate"],
-    # 注意: 緩い「領収書」はマイページのメニュー文言に誤マッチするため入れない。
+    # タブ「乗車／取消済の旅程」（全角／に注意。半角も一応入れる）
+    "tab_used_cancelled": ["乗車／取消済の旅程", "乗車/取消済の旅程", "取消済の旅程", "乗車／取消済", "乗車・取消済"],
+    "filter_show_all": "全て表示",   # 「表示内容を絞り込む」selectで選ぶ値
+    "filter_apply": ["絞り込む", "絞込", "この条件で絞り込む"],
+    # 一覧の各申込カードにある領収書発行ボタン（「ご利用票兼領収書を発行する」）
     "receipt_button": [
-        "ご利用兼領収書を発行する", "ご利用兼領収書", "領収書を発行する", "領収書を発行", "領収書発行",
+        "ご利用票兼領収書を発行する", "ご利用票兼領収書", "ご利用兼領収書を発行する", "領収書を発行する",
     ],
+    # 宛名入力ページの「領収書を発行する」（PDFダウンロード）
+    "issue_button": ["領収書を発行する", "発行する", "領収書発行"],
     "pager_next": ["次へ", "次の", ">"],
 }
 
@@ -91,7 +92,9 @@ async def run_flow(from_year: int, from_month: int, to_year: int, to_month: int,
             return downloaded, failed
 
         await _apply_filter(page, from_year, from_month, to_year, to_month)
-        downloaded, failed = await _download_receipts(page)
+        downloaded, failed = await _download_receipts(
+            page, from_year, from_month, to_year, to_month, recipient
+        )
     finally:
         try:
             await pw.stop()
@@ -363,118 +366,203 @@ async def _handle_jreid(page: Page) -> None:
     await page.wait_for_timeout(1500)
 
 
-# --- 6) 絞り込み ----------------------------------------------------------
+# --- 6) 絞り込み（タブ＋プルダウン） --------------------------------------
 async def _apply_filter(page: Page, from_year: int, from_month: int,
                         to_year: int, to_month: int) -> None:
-    # 履歴一覧がSPA描画されるのを待つ
+    # 申込履歴がSPA描画されるのを待つ
     for _ in range(20):
-        if await _has_receipt_buttons(page) or await _find_text_locator(page, SEL["tab_used_cancelled"]) is not None:
+        if await _find_text_locator(page, SEL["tab_used_cancelled"]) is not None or await _has_receipt_buttons(page):
             break
         await page.wait_for_timeout(500)
     await _dump(page, "ek_06_history")
 
+    # 「乗車／取消済の旅程」タブ
     await _click_text(page, SEL["tab_used_cancelled"])
-    await page.wait_for_timeout(1200)
-    await _click_text(page, SEL["filter_expand"])
-    await page.wait_for_timeout(800)
-    await _click_text(page, SEL["filter_show_all"])
+    await page.wait_for_timeout(1500)
 
-    start, end = _date_range(from_year, from_month, to_year, to_month)
-    print(f"[えきねっと] 期間: {start} 〜 {end}")
-    await _fill_period(page, start, end)
+    # 「表示内容を絞り込む」プルダウン → 全て表示
+    await _select_containing(page, [SEL["filter_show_all"], "全て", "すべて"])
 
+    # 期間: From年月 / To年月 の年月プルダウン
+    from_ym = f"{from_year}年{from_month}月"
+    to_ym = f"{to_year}年{to_month}月"
+    print(f"[えきねっと] 期間: {from_ym} 〜 {to_ym}")
+    await _select_period_yms(page, from_ym, to_ym)
+
+    # 「絞り込む」
     await _click_text(page, SEL["filter_apply"])
     await page.wait_for_load_state("domcontentloaded", timeout=config.TIMEOUT)
     await page.wait_for_timeout(2000)
     await _dump(page, "ek_07_filtered")
 
 
-async def _fill_period(page: Page, start_date: str, end_date: str) -> None:
-    ok_s = await _fill_by_keys(page, start_date, SEL["period_start_keys"])
-    ok_e = await _fill_by_keys(page, end_date, SEL["period_end_keys"])
-    if not (ok_s and ok_e):
-        try:
-            inputs = page.locator("input[type='text'][name], input[type='date'][name]")
-            if await inputs.count() >= 2:
-                if not ok_s:
-                    await inputs.nth(0).fill(start_date)
-                if not ok_e:
-                    await inputs.nth(1).fill(end_date)
-        except Exception:
-            pass
+async def _select_containing(page: Page, labels: List[str]) -> bool:
+    """labels のいずれかを選択肢に持つ select を見つけ、その選択肢を選ぶ。"""
+    selects = page.locator("select")
+    try:
+        n = await selects.count()
+    except Exception:
+        return False
+    for i in range(n):
+        opts = [datetools.normalize(o) for o in await _option_texts(selects.nth(i))]
+        for label in labels:
+            for idx, o in enumerate(opts):
+                if o == label or label in o:
+                    try:
+                        await selects.nth(i).select_option(index=idx)
+                        return True
+                    except Exception:
+                        pass
+    return False
 
 
-# --- 7) 領収書ダウンロード（フォルダ監視方式） ----------------------------
-async def _download_receipts(page: Page) -> tuple[List[str], List[str]]:
+async def _select_period_yms(page: Page, from_ym: str, to_ym: str) -> None:
+    """年月(「YYYY年M月」)を選択肢に持つ select を From/To の順に設定する。"""
+    selects = page.locator("select")
+    n = await selects.count()
+    ym_selects = []
+    for i in range(n):
+        opts = await _option_texts(selects.nth(i))
+        if any(("年" in o and "月" in o) for o in opts):
+            ym_selects.append(i)
+    if len(ym_selects) >= 2:
+        await _select_label(selects.nth(ym_selects[0]), from_ym)
+        await _select_label(selects.nth(ym_selects[1]), to_ym)
+    elif ym_selects:
+        await _select_label(selects.nth(ym_selects[0]), from_ym)
+
+
+async def _select_label(select, label: str) -> bool:
+    opts = [datetools.normalize(o).strip() for o in await _option_texts(select)]
+    for idx, o in enumerate(opts):
+        if o == label:
+            try:
+                await select.select_option(index=idx)
+                return True
+            except Exception:
+                return False
+    for idx, o in enumerate(opts):
+        if label in o:
+            try:
+                await select.select_option(index=idx)
+                return True
+            except Exception:
+                return False
+    return False
+
+
+async def _option_texts(select) -> List[str]:
+    try:
+        return await select.locator("option").all_text_contents()
+    except Exception:
+        return []
+
+
+# --- 7) 領収書ダウンロード（一覧→宛名→発行→一覧へ戻る） ------------------
+async def _download_receipts(page: Page, from_year: int, from_month: int,
+                             to_year: int, to_month: int, recipient: str) -> tuple[List[str], List[str]]:
     downloaded: List[str] = []
     failed: List[str] = []
-    seq = 0
-    page_no = 1
 
-    while True:
-        sel = await _winning_receipt_selector(page)
-        count = await page.locator(sel).count() if sel else 0
-        print(f"[えきねっと] {page_no}ページ目: 領収書 {count} 件")
-        if not sel or count == 0:
-            if page_no == 1:
-                await _dump(page, "ek_08_no_receipts")
+    sel = await _winning_receipt_selector(page)
+    total = await page.locator(sel).count() if sel else 0
+    print(f"[えきねっと] 対象の領収書: {total} 件")
+    if not sel or total == 0:
+        await _dump(page, "ek_08_no_receipts")
+        return downloaded, failed
+
+    for i in range(total):
+        if i > 0:
+            if not await _return_to_filtered_list(page, from_year, from_month, to_year, to_month):
+                print("[えきねっと] 一覧へ戻れませんでした。処理を中断します。")
+                break
+            sel = await _winning_receipt_selector(page)
+            if not sel:
+                break
+        btns = page.locator(sel)
+        if await btns.count() <= i:
             break
-
-        for i in range(count):
-            seq += 1
-            try:
-                path = await _click_and_capture(page, page.locator(sel).nth(i), seq)
-                downloaded.append(str(path))
-                print(f"[えきねっと #{seq:03d}] 保存: {Path(path).name}")
-            except Exception as e:
-                failed.append(f"p{page_no}/{i}")
-                print(f"[えきねっと #{seq:03d}] 失敗 (p{page_no}/{i}): {e}")
-            await page.wait_for_timeout(600)
-
-        if not await _go_next_page(page):
-            break
-        page_no += 1
-        await page.wait_for_timeout(1500)
+        seq = i + 1
+        try:
+            await btns.nth(i).click()                       # → 宛名入力ページ
+            await page.wait_for_load_state("domcontentloaded", timeout=config.TIMEOUT)
+            await _wait_for_atena_page(page)
+            await _fill_atena(page, recipient, seq)
+            path = await _issue_and_capture(page, seq)       # 「領収書を発行する」→DL
+            downloaded.append(str(path))
+            print(f"[えきねっと #{seq:03d}] 保存: {Path(path).name}")
+        except Exception as e:
+            failed.append(f"#{seq}")
+            print(f"[えきねっと #{seq:03d}] 失敗: {e}")
 
     return downloaded, failed
 
 
-async def _click_and_capture(page: Page, button, seq: int) -> Path:
-    """発行ボタンをクリックし、(a)ダウンロードされたファイル or (b)別タブPDF を保存する。"""
-    before = {p.name for p in config.OUTPUT_DIR.glob("*")}
-    pages_before = set(page.context.pages)
-    await button.click()
+async def _return_to_filtered_list(page: Page, from_year: int, from_month: int,
+                                   to_year: int, to_month: int) -> bool:
+    """宛名/発行ページから、絞り込み済みの申込履歴一覧へ戻る。"""
+    # 1) ブラウザバック（SPAの絞り込み状態が復帰すること多い）
+    try:
+        await page.go_back(wait_until="domcontentloaded", timeout=config.TIMEOUT)
+        await page.wait_for_timeout(1500)
+        if await _has_receipt_buttons(page):
+            return True
+    except Exception:
+        pass
+    # 2) 申込履歴へ遷移して絞り込み直す
+    if await _reach_history(page):
+        await _apply_filter(page, from_year, from_month, to_year, to_month)
+        return await _has_receipt_buttons(page)
+    return False
 
-    deadline = time.monotonic() + 25
+
+async def _wait_for_atena_page(page: Page) -> None:
+    """宛名入力ページの表示待ち（「領収書を発行する」ボタン or 宛名入力欄）。"""
+    for _ in range(20):
+        if await _find_text_locator(page, SEL["issue_button"]) is not None:
+            return
+        if await page.locator("input[type='text']").count() > 0 and await _has_text(page, ["宛名"]):
+            return
+        await page.wait_for_timeout(500)
+
+
+async def _fill_atena(page: Page, recipient: str, seq: int) -> None:
+    """宛名入力（1行目に起動時指定の宛名）。"""
+    if not recipient:
+        return
+    try:
+        inputs = page.locator("input[type='text']:visible")
+        if await inputs.count() == 0:
+            inputs = page.locator("input[type='text']")
+        if await inputs.count() > 0:
+            await inputs.first.fill(recipient)
+            print(f"[えきねっと #{seq:03d}] 宛名入力: {recipient}")
+    except Exception:
+        print(f"[えきねっと #{seq:03d}] 宛名欄が見つからず（宛名なしで続行）")
+
+
+async def _issue_and_capture(page: Page, seq: int) -> Path:
+    """「領収書を発行する」を押し、ダウンロードされたPDFを保存（重複は連番で一意化）。"""
+    before = {p.name for p in config.OUTPUT_DIR.glob("*")}
+    btn = await _find_text_locator(page, SEL["issue_button"])
+    if btn is None:
+        await _dump(page, f"ek_09_no_issue_{seq:03d}")
+        raise RuntimeError("「領収書を発行する」ボタンが見つかりません")
+    await btn.click()
+
+    deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         newf = _newest_new_file(config.OUTPUT_DIR, before)
         if newf is not None:
-            return newf
-        new_pages = [p for p in page.context.pages if p not in pages_before]
-        if new_pages:
-            pop = new_pages[0]
-            try:
-                await pop.wait_for_load_state("load", timeout=8000)
-            except Exception:
-                pass
-            await pop.wait_for_timeout(1000)
-            # ダウンロードに転じるか待つ
-            nf = _newest_new_file(config.OUTPUT_DIR, before)
-            if nf is not None:
-                try:
-                    await pop.close()
-                except Exception:
-                    pass
-                return nf
-            path = _unique_path(config.OUTPUT_DIR / f"領収書_{seq:03d}.pdf")
-            path.write_bytes(await _print_to_pdf(pop))
-            try:
-                await pop.close()
-            except Exception:
-                pass
-            return path
+            await page.wait_for_timeout(500)  # 書き込み完了待ち
+            return _ensure_unique(newf)
         await asyncio.sleep(0.6)
-    raise RuntimeError("ダウンロード/PDFを検知できませんでした")
+    raise RuntimeError("ダウンロードを検知できませんでした")
+
+
+def _ensure_unique(path: Path) -> Path:
+    """同名既存があれば連番に改名（Chromeの自動連番に任せられない場合の保険）。"""
+    return path  # Chrome が downloadPath で自動的に (1),(2) を付与するためそのまま
 
 
 def _newest_new_file(folder: Path, before: set) -> Optional[Path]:
