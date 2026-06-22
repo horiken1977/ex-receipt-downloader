@@ -43,7 +43,7 @@ def parse_args():
     p.add_argument("month_str", nargs="?", metavar="YYYY/MM", help="対象の乗車月 (例: 2024/01)")
     p.add_argument("--year", type=int, help="年 (4桁)")
     p.add_argument("--month", type=int, help="月 (1-12)")
-    p.add_argument("--service", choices=["smart-ex", "expy"], help="サービス種別")
+    p.add_argument("--service", choices=["smart-ex", "expy", "eki-net"], help="サービス種別")
     p.add_argument("--recipient", metavar="宛名", help="宛名")
     p.add_argument("--output", metavar="DIR", help="PDF出力ディレクトリ (既定: デスクトップ)")
     p.add_argument("--no-headless", action="store_true",
@@ -100,10 +100,12 @@ def print_header(year: int, month: int) -> None:
     print(f"宛名      : {config.RECIPIENT_NAME}")
     print(f"保存先    : {config.OUTPUT_DIR}")
     print(f"ヘッドレス: {config.HEADLESS}")
-    avail = config.check_month_available(year, month)
-    print(f"利用可否    : {'OK' if avail.ok else 'NG - ' + avail.reason}")
-    if config.in_maintenance_window():
-        print("注意        : 現在 23:30〜5:30 のメンテ時間帯の可能性")
+    # 利用可否/メンテ時間チェックは JR東海(RSV_P)系のみ
+    if config.SERVICE_TYPE in config.JR_CENTRAL_SERVICES:
+        avail = config.check_month_available(year, month)
+        print(f"利用可否  : {'OK' if avail.ok else 'NG - ' + avail.reason}")
+        if config.in_maintenance_window():
+            print("注意      : 現在 23:30〜5:30 のメンテ時間帯の可能性")
     print("=" * 50)
 
 

@@ -55,7 +55,16 @@ SERVICE_CONFIGS = {
         "base_url": "https://shinkansen1.jr-central.co.jp",
         "receipt_menu_action": "",
     },
+    # えきねっと(JR東日本)。フローは providers/ekinet.py（JR東海とは別実装）。
+    "eki-net": {
+        "name": "えきねっと",
+        "login_url": "https://www.eki-net.com/Personal/member/wb/Login/Login",
+        "base_url": "https://www.eki-net.com",
+    },
 }
+
+# JR東海(RSV_P)系のサービス。これ以外(eki-net等)は専用プロバイダで処理する。
+JR_CENTRAL_SERVICES = ("smart-ex", "expy")
 
 
 def get_service_config() -> dict:

@@ -23,18 +23,28 @@ class Pipeline:
         self.failed: List[str] = []
 
     async def run(self) -> dict:
-        avail = config.check_month_available(self.year, self.month)
-        if not avail.ok:
-            print(f"[Pipeline] 中止: {avail.reason}")
-            return self._result()
-        if config.in_maintenance_window():
-            print("[Pipeline] 警告: 23:30〜5:30 はメンテ時間帯で領収書表示が利用できない可能性があります。")
+        is_jr_central = config.SERVICE_TYPE in config.JR_CENTRAL_SERVICES
+
+        # 利用可否/メンテ時間チェックは JR東海(RSV_P)系のみ適用。
+        if is_jr_central:
+            avail = config.check_month_available(self.year, self.month)
+            if not avail.ok:
+                print(f"[Pipeline] 中止: {avail.reason}")
+                return self._result()
+            if config.in_maintenance_window():
+                print("[Pipeline] 警告: 23:30〜5:30 はメンテ時間帯で領収書表示が利用できない可能性があります。")
 
         # ログインは手入力のため、常に画面を表示して実行する。
         await browser_manager.start(headless=False)
         try:
-            page = await login_agent.ensure_session(self.service_cfg)
-            await self._download_all(page)
+            if config.SERVICE_TYPE == "eki-net":
+                from providers import ekinet
+                self.downloaded, self.failed = await ekinet.run_flow(
+                    self.year, self.month, config.RECIPIENT_NAME
+                )
+            else:
+                page = await login_agent.ensure_session(self.service_cfg)
+                await self._download_all(page)
         finally:
             await browser_manager.stop()
         return self._result()
