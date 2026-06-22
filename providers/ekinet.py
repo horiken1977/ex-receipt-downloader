@@ -50,10 +50,11 @@ SEL = {
     "agreement_next": ["次へ", "同意して次へ", "次へ進む", "同意する"],
     "jreid_skip": ["今は登録しない", "登録しない", "あとで登録", "スキップ"],
     "history_menu": [
-        "JR切符確認・取り消し・払い戻し・領収書",
-        "JR券の確認・払戻・領収書",
+        "JRきっぷ 確認・変更・払戻・領収書",
+        "JRきっぷ　確認・変更・払戻・領収書",
+        "確認・変更・払戻・領収書",
         "確認・払戻・領収書",
-        "申込履歴", "購入履歴", "ご利用履歴", "領収書",
+        "申込履歴", "購入履歴", "ご利用履歴",
     ],
     "tab_used_cancelled": ["乗車/取消済の旅程", "乗車・取消済の旅程", "乗車/取消済", "乗車・取消済"],
     "filter_expand": ["表示内容を絞り込む", "絞り込み条件", "絞り込み"],
@@ -286,13 +287,21 @@ async def _reach_history(page: Page) -> bool:
 
 
 async def _click_history_menu(page: Page) -> bool:
-    for css in ("a[data-urlkey='HistoryList']", "a[data-urlkey*='HistoryList']",
-                "[data-urlkey*='HistoryList']"):
+    # 実サイト: 「JRきっぷ 確認・変更・払戻・領収書」= a[data-action=TransitionToApplicationHistoryList]
+    # （data-urlkey=HistoryList は非表示の内部リンクなので使わない）。表示中のものをクリック。
+    for css in ("a[data-action='TransitionToApplicationHistoryList']",
+                "[data-action*='ApplicationHistoryList']",
+                "a[data-urlkey='HistoryList']"):
         try:
-            el = page.locator(css).first
-            if await el.count() > 0:
-                await el.click()
-                return True
+            loc = page.locator(css)
+            for i in range(await loc.count()):
+                el = loc.nth(i)
+                try:
+                    if await el.is_visible():
+                        await el.click()
+                        return True
+                except Exception:
+                    continue
         except Exception:
             continue
     return await _click_text(page, SEL["history_menu"])
