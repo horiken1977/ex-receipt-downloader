@@ -21,7 +21,9 @@ from __future__ import annotations
 import asyncio
 import calendar
 import datetime
+import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -73,7 +75,7 @@ async def run_flow(from_year: int, from_month: int, to_year: int, to_month: int,
     downloaded: List[str] = []
     failed: List[str] = []
 
-    _ensure_chrome_running()  # 実Chromeを起動（or 既存に再利用）。Chromeは開いたまま。
+    proc = _ensure_chrome_running()  # 残存デバッグChromeを終了し、毎回まっさらに起動
     pw = await async_playwright().start()
     try:
         browser = await _connect(pw)
@@ -94,7 +96,12 @@ async def run_flow(from_year: int, from_month: int, to_year: int, to_month: int,
             await pw.stop()
         except Exception:
             pass
-        # Chrome は開いたまま（次回は接続再利用＝再ログイン不要）。閉じる場合はユーザー操作で。
+        # 次回接続の競合を避けるため、起動したChromeを終了（プロファイルは残るのでcookieは保持）。
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
     return downloaded, failed
 
 
@@ -126,14 +133,13 @@ def _find_chrome() -> Optional[str]:
 
 
 def _ensure_chrome_running() -> Optional[subprocess.Popen]:
-    """既にデバッグChromeが起動していれば再利用。無ければ実Chromeを通常起動する。"""
-    import urllib.request
-    try:
-        urllib.request.urlopen(f"{CDP_URL}/json/version", timeout=2).read()
-        print("[えきねっと] 既存のChrome(デバッグ)に接続します。")
-        return None
-    except Exception:
-        pass
+    """残存デバッグChrome(ポート競合)を終了してから、実Chromeを通常起動する。
+
+    既存インスタンスへの再接続は connect_over_cdp が失敗する（Browser context
+    management is not supported）ため再利用しない。プロファイルは保持するので
+    cookie/ログインは引き継がれる。
+    """
+    _kill_debug_chrome()
 
     chrome = _find_chrome()
     if not chrome:
@@ -149,6 +155,29 @@ def _ensure_chrome_running() -> Optional[subprocess.Popen]:
     ]
     print("[えきねっと] 実Chromeを起動します（このウィンドウでログインしてください）。")
     return subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _kill_debug_chrome() -> None:
+    """デバッグポート(CDP_PORT)を使っている残存Chromeを終了する。"""
+    try:
+        if sys.platform == "win32":
+            out = subprocess.run(
+                f'netstat -ano | findstr :{CDP_PORT}', shell=True,
+                capture_output=True, text=True).stdout
+            pids = {ln.split()[-1] for ln in out.splitlines() if "LISTENING" in ln}
+            for pid in pids:
+                subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True)
+        else:
+            out = subprocess.run(["lsof", "-ti", f"tcp:{CDP_PORT}"],
+                                 capture_output=True, text=True).stdout
+            for pid in out.split():
+                try:
+                    os.kill(int(pid), signal.SIGTERM)
+                except Exception:
+                    pass
+        time.sleep(1.2)
+    except Exception:
+        pass
 
 
 async def _connect(pw):
