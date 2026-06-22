@@ -34,17 +34,20 @@ class Pipeline:
             if config.in_maintenance_window():
                 print("[Pipeline] 警告: 23:30〜5:30 はメンテ時間帯で領収書表示が利用できない可能性があります。")
 
-        # ログインは手入力のため、常に画面を表示して実行する。
+        # えきねっとは Akamai のbot対策があるため、実Chromeに CDP 接続する専用フロー
+        # （browser_manager の Playwright Chromium は使わない）。
+        if config.SERVICE_TYPE == "eki-net":
+            from providers import ekinet
+            self.downloaded, self.failed = await ekinet.run_flow(
+                self.year, self.month, config.RECIPIENT_NAME
+            )
+            return self._result()
+
+        # JR東海系: ログインは手入力のため、常に画面を表示して実行する。
         await browser_manager.start(headless=False)
         try:
-            if config.SERVICE_TYPE == "eki-net":
-                from providers import ekinet
-                self.downloaded, self.failed = await ekinet.run_flow(
-                    self.year, self.month, config.RECIPIENT_NAME
-                )
-            else:
-                page = await login_agent.ensure_session(self.service_cfg)
-                await self._download_all(page)
+            page = await login_agent.ensure_session(self.service_cfg)
+            await self._download_all(page)
         finally:
             await browser_manager.stop()
         return self._result()

@@ -1,158 +1,236 @@
 """
 えきねっと（JR東日本）から指定月の領収書をダウンロードするプロバイダ。
 
-ユーザー指定のフロー:
-  1. ログインページを開く
-  2. ユーザーが ID/PW を手入力してログイン（必要なら追加認証も）
-  3. 規約合意ページ（UserRuleAgreement）: 各「同意する」にチェック →「次へ」
-  4. JREIDページ（JreidAnnounce）:「今は登録しない」
-  5. 申込履歴一覧（ApplicationHistoryList）へ
-  6. 「乗車/取消済の旅程」→「表示内容を絞り込む」をすべて表示、「期間」を対象月にして「絞り込む」
-  7. 各行の「ご利用兼領収書を発行する」をクリック → 領収書ファイルが自動ダウンロード
-     （同名はファイル名を変えて保存）。表示分すべてを繰り返す。
+えきねっとは Akamai のボット対策があり、Playwright が起動した Chromium は遮断される。
+そこで「ユーザーの実 Google Chrome を通常起動（automation痕跡なし）」し、CDP で接続して
+操作する。Chrome 側は普通のブラウザに見えるため検知を回避しやすい。
 
-※ 実サイトの DOM は未検証。セレクタは下記 SEL に集約し、--debug の HTML/スクショで調整する。
+フロー（ユーザー指定）:
+  1. 実Chromeを --remote-debugging-port 付きで起動し、eki-net トップを開く
+  2. ユーザーが自分でログイン（ID/PW＋追加認証）。会員ページ到達を自動検知
+  3. 規約合意ページ: 各「同意する」にチェック →「次へ」
+  4. JREIDページ:「今は登録しない」
+  5. 会員メニュー →「JR切符…確認・払戻・領収書」をクリックして申込履歴へ
+  6. 「乗車/取消済の旅程」→ 対象月で絞り込み
+  7. 各「ご利用兼領収書を発行する」をクリック → 領収書ファイルが自動ダウンロード（重複は連番）
+
+※ ログイン後ページの DOM は未検証。セレクタは SEL に集約し、--debug で調整する。
 """
 from __future__ import annotations
 
 import asyncio
 import calendar
 import datetime
-import re
+import shutil
+import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import List, Optional
 
-from playwright.async_api import Page
+from playwright.async_api import Page, async_playwright
 
 import browser_manager
 import config
 
-# --- えきねっと用セレクタ/URL（要・実DOM調整） ----------------------------
-SEL = {
-    "login_url": "https://www.eki-net.com/Personal/member/wb/Login/Login",
-    "history_url": "https://www.eki-net.com/Personal/reserve/wb/ApplicationHistoryList/Index",
+CDP_PORT = 9222
+CDP_URL = f"http://127.0.0.1:{CDP_PORT}"
+CHROME_PROFILE = Path.home() / ".ex-ekinet-chrome"   # OneDrive外の専用プロファイル
+TOP_URL = "https://www.eki-net.com/"
 
-    # ページ判定（URL の部分一致）
+SEL = {
     "url_login": "login",
     "url_agreement": "userruleagreement",
     "url_jreid": "jreid",
     "url_history": "applicationhistorylist",
 
-    # 規約合意ページ
     "agreement_checkbox": "input[type='checkbox']",
     "agreement_next": ["次へ", "同意して次へ", "次へ進む", "同意する"],
-
-    # JREID 案内ページ
     "jreid_skip": ["今は登録しない", "登録しない", "あとで登録", "スキップ"],
-
-    # 会員メニュー →「JR券の確認・取消・払戻・領収書」（申込履歴一覧へ）
     "history_menu": [
         "JR切符確認・取り消し・払い戻し・領収書",
         "JR券の確認・払戻・領収書",
         "確認・払戻・領収書",
         "申込履歴", "購入履歴", "ご利用履歴", "領収書",
     ],
-
-    # 履歴一覧: タブ・絞り込み
     "tab_used_cancelled": ["乗車/取消済の旅程", "乗車・取消済の旅程", "乗車/取消済", "乗車・取消済"],
     "filter_expand": ["表示内容を絞り込む", "絞り込み条件", "絞り込み"],
     "filter_show_all": ["すべて表示", "すべて", "全て表示", "全て"],
     "filter_apply": ["絞り込む", "絞込", "この条件で絞り込む", "検索"],
-    # 期間の日付入力欄（name/id/placeholder 部分一致）
     "period_start_keys": ["from", "start", "開始", "fromDate", "startDate"],
     "period_end_keys": ["to", "end", "終了", "toDate", "endDate"],
-
-    # 領収書発行ボタン
     "receipt_button": [
-        "ご利用兼領収書を発行する",
-        "ご利用兼領収書",
-        "領収書を発行",
-        "領収書発行",
-        "領収書",
+        "ご利用兼領収書を発行する", "ご利用兼領収書", "領収書を発行", "領収書発行", "領収書",
     ],
-    # ページ送り
     "pager_next": ["次へ", "次の", ">"],
 }
 
 
 async def run_flow(year: int, month: int, recipient: str) -> tuple[List[str], List[str]]:
-    """えきねっとから対象月の領収書を全件ダウンロードし、(成功パス, 失敗ラベル) を返す。"""
+    """実Chromeに CDP 接続して対象月の領収書を全件DLし、(成功パス, 失敗ラベル) を返す。"""
     downloaded: List[str] = []
     failed: List[str] = []
 
-    page = await browser_manager.new_page()
+    _ensure_chrome_running()  # 実Chromeを起動（or 既存に再利用）。Chromeは開いたまま。
+    pw = await async_playwright().start()
+    try:
+        browser = await _connect(pw)
+        ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+        page = await _ekinet_page(ctx)
+        await _set_download_dir(page)
 
-    # 2) 手入力ログイン
-    await _login(page)
+        await _login(page)
+        if not await _reach_history(page):
+            await _dump(page, "ek_05_history_not_reached")
+            print("[えきねっと] 申込履歴一覧に到達できませんでした。--debug の HTML を確認してください。")
+            return downloaded, failed
 
-    # 3-5) 規約合意 / JREID を捌いて履歴一覧へ
-    if not await _reach_history(page):
-        await _dump(page, "ek_05_history_not_reached")
-        print("[えきねっと] 申込履歴一覧に到達できませんでした。--debug の HTML を確認してください。")
-        return downloaded, failed
-
-    # 6) 乗車/取消済タブ + 絞り込み（すべて表示 + 対象月）
-    await _apply_filter(page, year, month)
-
-    # 7) 領収書を順にダウンロード
-    downloaded, failed = await _download_receipts(page)
+        await _apply_filter(page, year, month)
+        downloaded, failed = await _download_receipts(page)
+    finally:
+        try:
+            await pw.stop()
+        except Exception:
+            pass
+        # Chrome は開いたまま（次回は接続再利用＝再ログイン不要）。閉じる場合はユーザー操作で。
     return downloaded, failed
 
 
-# --- 2) ログイン ----------------------------------------------------------
-async def _login(page: Page) -> None:
-    print("\n" + "=" * 60)
-    print("えきねっと: 表示されたブラウザの**トップページ**から、ご自身で")
-    print("「ログイン」をクリックして ID・パスワードでログインしてください。")
-    print("会員ページに入ると自動で続行します（最大5分待機）。")
-    print("※ こちらからは深いURLへ自動遷移しません（ボット検知回避のため）。")
-    print("=" * 60)
+# --- 実Chrome起動 & CDP接続 ----------------------------------------------
+def _find_chrome() -> Optional[str]:
+    if sys.platform == "darwin":
+        cands = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
+    elif sys.platform == "win32":
+        import os
+        cands = []
+        for base in (os.environ.get("PROGRAMFILES", ""), os.environ.get("PROGRAMFILES(X86)", ""),
+                     os.environ.get("LOCALAPPDATA", "")):
+            if base:
+                cands.append(str(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe"))
+    else:
+        cands = []
+        for n in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+            p = shutil.which(n)
+            if p:
+                cands.append(p)
+    for c in cands:
+        if c and Path(c).exists():
+            return c
+    for n in ("google-chrome", "chrome", "chromium"):
+        p = shutil.which(n)
+        if p:
+            return p
+    return None
 
-    # トップページだけ開く。以降の遷移（ログイン含む）はユーザー操作＆クリックで行う。
+
+def _ensure_chrome_running() -> Optional[subprocess.Popen]:
+    """既にデバッグChromeが起動していれば再利用。無ければ実Chromeを通常起動する。"""
+    import urllib.request
     try:
-        await page.goto("https://www.eki-net.com/", wait_until="domcontentloaded", timeout=config.TIMEOUT)
+        urllib.request.urlopen(f"{CDP_URL}/json/version", timeout=2).read()
+        print("[えきねっと] 既存のChrome(デバッグ)に接続します。")
+        return None
     except Exception:
         pass
 
-    import time
+    chrome = _find_chrome()
+    if not chrome:
+        raise RuntimeError("Google Chrome が見つかりません。Chrome をインストールしてください。")
+    CHROME_PROFILE.mkdir(parents=True, exist_ok=True)
+    args = [
+        chrome,
+        f"--remote-debugging-port={CDP_PORT}",
+        f"--user-data-dir={CHROME_PROFILE}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        TOP_URL,
+    ]
+    print("[えきねっと] 実Chromeを起動します（このウィンドウでログインしてください）。")
+    return subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+async def _connect(pw):
+    deadline = time.monotonic() + 30
+    last = None
+    while time.monotonic() < deadline:
+        try:
+            return await pw.chromium.connect_over_cdp(CDP_URL)
+        except Exception as e:
+            last = e
+            await asyncio.sleep(0.8)
+    raise RuntimeError(f"Chromeのデバッグポートに接続できませんでした: {last}")
+
+
+async def _ekinet_page(ctx) -> Page:
+    for p in ctx.pages:
+        try:
+            if "eki-net.com" in (p.url or ""):
+                return p
+        except Exception:
+            continue
+    if ctx.pages:
+        page = ctx.pages[0]
+    else:
+        page = await ctx.new_page()
+    if "eki-net.com" not in (page.url or ""):
+        try:
+            await page.goto(TOP_URL, wait_until="domcontentloaded", timeout=config.TIMEOUT)
+        except Exception:
+            pass
+    return page
+
+
+async def _set_download_dir(page: Page) -> None:
+    try:
+        client = await page.context.new_cdp_session(page)
+        await client.send("Browser.setDownloadBehavior", {
+            "behavior": "allow",
+            "downloadPath": str(config.OUTPUT_DIR),
+            "eventsEnabled": True,
+        })
+    except Exception as e:
+        print(f"[えきねっと] ダウンロード先設定に失敗（デフォルト保存先になる可能性）: {e}")
+
+
+# --- 2) ログイン待ち ------------------------------------------------------
+async def _login(page: Page) -> None:
+    print("\n" + "=" * 60)
+    print("えきねっと: 開いた Chrome で、ご自身でログインしてください。")
+    print("会員ページに入ると自動で続行します（最大5分待機）。")
+    print("=" * 60)
     deadline = time.monotonic() + 300
-    warned_error = False
+    warned = False
     while time.monotonic() < deadline:
         if await _is_logged_in(page):
             await page.wait_for_timeout(800)
             print(f"[えきねっと] ログインを検知しました（URL: {page.url}）")
             await _dump(page, "ek_03_after_login")
             return
-        if "error" in (page.url or "").lower() and not warned_error:
-            warned_error = True
-            print("[えきねっと] エラーページが表示されています。トップから入り直してログインしてください。")
+        if "error" in (page.url or "").lower() and not warned:
+            warned = True
+            print("[えきねっと] エラー/Access Denied が出た場合は、トップから入り直してください。")
         await asyncio.sleep(1.5)
     await _dump(page, "ek_03_after_login")
-    raise RuntimeError("えきねっと: ログイン（会員ページ到達）を検知できませんでした（タイムアウト）。")
+    raise RuntimeError("えきねっと: 会員ページ到達を検知できませんでした（タイムアウト）。")
 
 
 async def _is_logged_in(page: Page) -> bool:
-    """会員エリアに入ったか（ログイン/トップ/エラーでなく、会員ページ or ログアウト表示）。"""
     url = (page.url or "").lower()
-    if "login" in url or "error" in url:
+    if "login" in url or "error" in url or "denied" in url:
         return False
     if await _has_password(page):
         return False
-    # 会員エリアの既知パス
     if any(k in url for k in ("userruleagreement", "jreid", "applicationhistory", "reserve/wb", "mypage")):
         return True
     if "/member/wb/" in url and "login" not in url:
         return True
-    # トップ等に留まっていても、ログアウトリンクがあればログイン済み
     return await _has_text(page, ["ログアウト"])
 
 
-# --- 3-5) 規約合意/JREIDを捌いて履歴一覧へ --------------------------------
+# --- 3-5) 規約合意/JREID → 履歴 -------------------------------------------
 async def _reach_history(page: Page) -> bool:
-    """規約同意/JREIDを捌き、会員メニューから申込履歴へ「クリック」で進む（goto不使用）。"""
     for _ in range(8):
         url = (page.url or "").lower()
-
         if SEL["url_agreement"] in url or await _is_agreement_page(page):
             await _handle_agreement(page)
             continue
@@ -161,14 +239,11 @@ async def _reach_history(page: Page) -> bool:
             continue
         if await _is_history_page(page):
             return True
-
-        # 会員メニュー等にいる → 「JR切符…確認・払戻・領収書」メニューをクリックして履歴へ
         if await _click_text(page, SEL["history_menu"]):
             await page.wait_for_load_state("domcontentloaded", timeout=config.TIMEOUT)
             await page.wait_for_timeout(1800)
             continue
-        break  # 進めるリンクが見つからない
-
+        break
     return await _is_history_page(page)
 
 
@@ -177,7 +252,6 @@ async def _is_history_page(page: Page) -> bool:
         return True
     if await _has_receipt_buttons(page):
         return True
-    # 「乗車/取消済の旅程」タブがあれば履歴一覧とみなす
     return await _find_text_locator(page, SEL["tab_used_cancelled"]) is not None
 
 
@@ -185,20 +259,17 @@ async def _is_agreement_page(page: Page) -> bool:
     if SEL["url_agreement"] in (page.url or "").lower():
         return True
     try:
-        return await page.locator(SEL["agreement_checkbox"]).count() > 0 and \
-            await _has_text(page, ["規約", "同意"])
+        return await page.locator(SEL["agreement_checkbox"]).count() > 0 and await _has_text(page, ["規約", "同意"])
     except Exception:
         return False
 
 
 async def _handle_agreement(page: Page) -> None:
-    print("[えきねっと] 規約合意ページ: 同意にチェックして次へ進みます。")
+    print("[えきねっと] 規約合意: 同意にチェックして次へ。")
     await _dump(page, "ek_04_agreement")
-    # すべてのチェックボックスを ON
     try:
         boxes = page.locator(SEL["agreement_checkbox"])
-        n = await boxes.count()
-        for i in range(n):
+        for i in range(await boxes.count()):
             try:
                 await boxes.nth(i).check(timeout=3000)
             except Exception:
@@ -220,7 +291,7 @@ async def _is_jreid_page(page: Page) -> bool:
 
 
 async def _handle_jreid(page: Page) -> None:
-    print("[えきねっと] JREID案内ページ: 「今は登録しない」を選びます。")
+    print("[えきねっと] JREID案内:「今は登録しない」。")
     await _dump(page, "ek_04b_jreid")
     await _click_text(page, SEL["jreid_skip"])
     await page.wait_for_load_state("domcontentloaded", timeout=config.TIMEOUT)
@@ -230,23 +301,16 @@ async def _handle_jreid(page: Page) -> None:
 # --- 6) 絞り込み ----------------------------------------------------------
 async def _apply_filter(page: Page, year: int, month: int) -> None:
     await _dump(page, "ek_06_history")
-    # 「乗車/取消済の旅程」タブ
     await _click_text(page, SEL["tab_used_cancelled"])
     await page.wait_for_timeout(1200)
-
-    # 「表示内容を絞り込む」を開く（折りたたみUIの場合）
     await _click_text(page, SEL["filter_expand"])
     await page.wait_for_timeout(800)
-
-    # 「すべて表示」
     await _click_text(page, SEL["filter_show_all"])
 
-    # 期間（対象月の初日〜末日）
     start, end = _month_range(year, month)
     print(f"[えきねっと] 期間: {start} 〜 {end}")
     await _fill_period(page, start, end)
 
-    # 「絞り込む」
     await _click_text(page, SEL["filter_apply"])
     await page.wait_for_load_state("domcontentloaded", timeout=config.TIMEOUT)
     await page.wait_for_timeout(2000)
@@ -257,11 +321,9 @@ async def _fill_period(page: Page, start_date: str, end_date: str) -> None:
     ok_s = await _fill_by_keys(page, start_date, SEL["period_start_keys"])
     ok_e = await _fill_by_keys(page, end_date, SEL["period_end_keys"])
     if not (ok_s and ok_e):
-        # フォールバック: 可視テキスト入力欄を先頭から2つ
         try:
             inputs = page.locator("input[type='text'][name], input[type='date'][name]")
-            cnt = await inputs.count()
-            if cnt >= 2:
+            if await inputs.count() >= 2:
                 if not ok_s:
                     await inputs.nth(0).fill(start_date)
                 if not ok_e:
@@ -270,7 +332,7 @@ async def _fill_period(page: Page, start_date: str, end_date: str) -> None:
             pass
 
 
-# --- 7) 領収書ダウンロード ------------------------------------------------
+# --- 7) 領収書ダウンロード（フォルダ監視方式） ----------------------------
 async def _download_receipts(page: Page) -> tuple[List[str], List[str]]:
     downloaded: List[str] = []
     failed: List[str] = []
@@ -281,16 +343,15 @@ async def _download_receipts(page: Page) -> tuple[List[str], List[str]]:
         sel = await _winning_receipt_selector(page)
         count = await page.locator(sel).count() if sel else 0
         print(f"[えきねっと] {page_no}ページ目: 領収書 {count} 件")
-        if sel is None or count == 0:
+        if not sel or count == 0:
             if page_no == 1:
                 await _dump(page, "ek_08_no_receipts")
             break
 
         for i in range(count):
             seq += 1
-            btn = page.locator(sel).nth(i)
             try:
-                path = await _click_and_save(page, btn, seq)
+                path = await _click_and_capture(page, page.locator(sel).nth(i), seq)
                 downloaded.append(str(path))
                 print(f"[えきねっと #{seq:03d}] 保存: {Path(path).name}")
             except Exception as e:
@@ -306,36 +367,53 @@ async def _download_receipts(page: Page) -> tuple[List[str], List[str]]:
     return downloaded, failed
 
 
-async def _click_and_save(page: Page, button, seq: int) -> Path:
-    """発行ボタンをクリックし、ダウンロード(添付) or 別タブPDF を保存する。"""
-    # まず通常のファイルダウンロードを期待
-    try:
-        async with page.expect_download(timeout=15000) as di:
-            await button.click()
-        dl = await di.value
-        name = dl.suggested_filename or f"領収書_{seq:03d}.pdf"
-        path = _unique_path(config.OUTPUT_DIR / _sanitize(name))
-        await dl.save_as(str(path))
-        return path
-    except Exception:
-        pass
+async def _click_and_capture(page: Page, button, seq: int) -> Path:
+    """発行ボタンをクリックし、(a)ダウンロードされたファイル or (b)別タブPDF を保存する。"""
+    before = {p.name for p in config.OUTPUT_DIR.glob("*")}
+    pages_before = set(page.context.pages)
+    await button.click()
 
-    # 別タブ(PDFビューア)で開くタイプ → そのページを printToPDF
+    deadline = time.monotonic() + 25
+    while time.monotonic() < deadline:
+        newf = _newest_new_file(config.OUTPUT_DIR, before)
+        if newf is not None:
+            return newf
+        new_pages = [p for p in page.context.pages if p not in pages_before]
+        if new_pages:
+            pop = new_pages[0]
+            try:
+                await pop.wait_for_load_state("load", timeout=8000)
+            except Exception:
+                pass
+            await pop.wait_for_timeout(1000)
+            # ダウンロードに転じるか待つ
+            nf = _newest_new_file(config.OUTPUT_DIR, before)
+            if nf is not None:
+                try:
+                    await pop.close()
+                except Exception:
+                    pass
+                return nf
+            path = _unique_path(config.OUTPUT_DIR / f"領収書_{seq:03d}.pdf")
+            path.write_bytes(await _print_to_pdf(pop))
+            try:
+                await pop.close()
+            except Exception:
+                pass
+            return path
+        await asyncio.sleep(0.6)
+    raise RuntimeError("ダウンロード/PDFを検知できませんでした")
+
+
+def _newest_new_file(folder: Path, before: set) -> Optional[Path]:
     try:
-        async with page.expect_popup(timeout=8000) as pi:
-            await button.click()
-        popup = await pi.value
-        await popup.wait_for_load_state("load", timeout=config.TIMEOUT)
-        await popup.wait_for_timeout(1500)
-        path = _unique_path(config.OUTPUT_DIR / f"領収書_{seq:03d}.pdf")
-        path.write_bytes(await _print_to_pdf(popup))
-        try:
-            await popup.close()
-        except Exception:
-            pass
-        return path
-    except Exception as e:
-        raise RuntimeError(f"ダウンロードを検知できませんでした: {e}")
+        files = [p for p in folder.glob("*") if p.is_file()]
+    except Exception:
+        return None
+    cand = [p for p in files if p.name not in before and not p.name.endswith(".crdownload")]
+    if not cand:
+        return None
+    return max(cand, key=lambda p: p.stat().st_mtime)
 
 
 async def _print_to_pdf(page: Page) -> bytes:
@@ -448,13 +526,6 @@ async def _has_text(page: Page, words: List[str]) -> bool:
     except Exception:
         return False
     return any(w in body for w in words)
-
-
-def _sanitize(name: str) -> str:
-    name = re.sub(r'[\\/:*?"<>|]', "_", name).strip()
-    if not name.lower().endswith(".pdf"):
-        name += ".pdf"
-    return name
 
 
 def _unique_path(path: Path) -> Path:
