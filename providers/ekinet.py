@@ -45,6 +45,14 @@ SEL = {
     # JREID 案内ページ
     "jreid_skip": ["今は登録しない", "登録しない", "あとで登録", "スキップ"],
 
+    # 会員メニュー →「JR券の確認・取消・払戻・領収書」（申込履歴一覧へ）
+    "history_menu": [
+        "JR切符確認・取り消し・払い戻し・領収書",
+        "JR券の確認・払戻・領収書",
+        "確認・払戻・領収書",
+        "申込履歴", "購入履歴", "ご利用履歴", "領収書",
+    ],
+
     # 履歴一覧: タブ・絞り込み
     "tab_used_cancelled": ["乗車/取消済の旅程", "乗車・取消済の旅程", "乗車/取消済", "乗車・取消済"],
     "filter_expand": ["表示内容を絞り込む", "絞り込み条件", "絞り込み"],
@@ -94,46 +102,55 @@ async def run_flow(year: int, month: int, recipient: str) -> tuple[List[str], Li
 # --- 2) ログイン ----------------------------------------------------------
 async def _login(page: Page) -> None:
     print("\n" + "=" * 60)
-    print("えきねっと ログイン: 表示されたブラウザで ID・パスワードを手入力してください。")
-    print("ログイン後、画面が切り替われば自動で続行します（最大5分待機）。")
+    print("えきねっと: 表示されたブラウザの**トップページ**から、ご自身で")
+    print("「ログイン」をクリックして ID・パスワードでログインしてください。")
+    print("会員ページに入ると自動で続行します（最大5分待機）。")
+    print("※ こちらからは深いURLへ自動遷移しません（ボット検知回避のため）。")
     print("=" * 60)
 
-    # bot検知対策: まず eki-net トップに寄って保護用JS/cookieを通してからログインページへ。
+    # トップページだけ開く。以降の遷移（ログイン含む）はユーザー操作＆クリックで行う。
     try:
         await page.goto("https://www.eki-net.com/", wait_until="domcontentloaded", timeout=config.TIMEOUT)
-        await page.wait_for_timeout(2500)
-    except Exception:
-        pass
-    try:
-        await page.goto(SEL["login_url"], wait_until="domcontentloaded", timeout=config.TIMEOUT)
     except Exception:
         pass
 
     import time
     deadline = time.monotonic() + 300
+    warned_error = False
     while time.monotonic() < deadline:
-        url = (page.url or "").lower()
-        if "error" in url:
-            await _dump(page, "ek_03_after_login")
-            raise RuntimeError(
-                "えきねっとがエラーページ（ご確認ください）を表示しました。"
-                "ボット検知の可能性があります（output/debug_ek_03_after_login.html を確認）。"
-            )
-        # ログインページを離れ、パスワード欄が無くなれば「ログイン済み」とみなす
-        if SEL["url_login"] not in url and not await _has_password(page):
+        if await _is_logged_in(page):
             await page.wait_for_timeout(800)
-            if "error" in (page.url or "").lower():
-                continue
             print(f"[えきねっと] ログインを検知しました（URL: {page.url}）")
             await _dump(page, "ek_03_after_login")
             return
+        if "error" in (page.url or "").lower() and not warned_error:
+            warned_error = True
+            print("[えきねっと] エラーページが表示されています。トップから入り直してログインしてください。")
         await asyncio.sleep(1.5)
-    raise RuntimeError("えきねっと: ログインを検知できませんでした（タイムアウト）。")
+    await _dump(page, "ek_03_after_login")
+    raise RuntimeError("えきねっと: ログイン（会員ページ到達）を検知できませんでした（タイムアウト）。")
+
+
+async def _is_logged_in(page: Page) -> bool:
+    """会員エリアに入ったか（ログイン/トップ/エラーでなく、会員ページ or ログアウト表示）。"""
+    url = (page.url or "").lower()
+    if "login" in url or "error" in url:
+        return False
+    if await _has_password(page):
+        return False
+    # 会員エリアの既知パス
+    if any(k in url for k in ("userruleagreement", "jreid", "applicationhistory", "reserve/wb", "mypage")):
+        return True
+    if "/member/wb/" in url and "login" not in url:
+        return True
+    # トップ等に留まっていても、ログアウトリンクがあればログイン済み
+    return await _has_text(page, ["ログアウト"])
 
 
 # --- 3-5) 規約合意/JREIDを捌いて履歴一覧へ --------------------------------
 async def _reach_history(page: Page) -> bool:
-    for _ in range(6):
+    """規約同意/JREIDを捌き、会員メニューから申込履歴へ「クリック」で進む（goto不使用）。"""
+    for _ in range(8):
         url = (page.url or "").lower()
 
         if SEL["url_agreement"] in url or await _is_agreement_page(page):
@@ -142,21 +159,26 @@ async def _reach_history(page: Page) -> bool:
         if SEL["url_jreid"] in url or await _is_jreid_page(page):
             await _handle_jreid(page)
             continue
-        if await _has_receipt_buttons(page) or SEL["url_history"] in url:
+        if await _is_history_page(page):
             return True
 
-        # まだ履歴でなければ、履歴一覧URLへ移動を試す
-        try:
-            await page.goto(SEL["history_url"], wait_until="domcontentloaded", timeout=config.TIMEOUT)
-            await page.wait_for_timeout(1500)
-        except Exception:
-            pass
-        # 移動先が規約/JREIDなら次ループで処理。履歴なら下で確定。
-        url2 = (page.url or "").lower()
-        if SEL["url_history"] in url2 and not await _is_agreement_page(page):
-            return True
+        # 会員メニュー等にいる → 「JR切符…確認・払戻・領収書」メニューをクリックして履歴へ
+        if await _click_text(page, SEL["history_menu"]):
+            await page.wait_for_load_state("domcontentloaded", timeout=config.TIMEOUT)
+            await page.wait_for_timeout(1800)
+            continue
+        break  # 進めるリンクが見つからない
 
-    return SEL["url_history"] in (page.url or "").lower()
+    return await _is_history_page(page)
+
+
+async def _is_history_page(page: Page) -> bool:
+    if SEL["url_history"] in (page.url or "").lower():
+        return True
+    if await _has_receipt_buttons(page):
+        return True
+    # 「乗車/取消済の旅程」タブがあれば履歴一覧とみなす
+    return await _find_text_locator(page, SEL["tab_used_cancelled"]) is not None
 
 
 async def _is_agreement_page(page: Page) -> bool:
