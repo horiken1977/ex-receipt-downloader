@@ -229,17 +229,23 @@ async def _is_logged_in(page: Page) -> bool:
 
 # --- 3-5) 規約合意/JREID → 履歴 -------------------------------------------
 async def _reach_history(page: Page) -> bool:
-    for _ in range(8):
+    last_url = None
+    stuck = 0
+    for _ in range(12):
         url = (page.url or "").lower()
-        if SEL["url_agreement"] in url or await _is_agreement_page(page):
-            await _handle_agreement(page)
-            continue
-        if SEL["url_jreid"] in url or await _is_jreid_page(page):
+        stuck = stuck + 1 if url == last_url else 0
+        last_url = url
+
+        # JREID を先に判定（URLが確実）。規約合意の誤判定を避ける。
+        if SEL["url_jreid"] in url or (stuck < 2 and await _is_jreid_page(page)):
             await _handle_jreid(page)
+            continue
+        if SEL["url_agreement"] in url or (stuck < 2 and await _is_agreement_page(page)):
+            await _handle_agreement(page)
             continue
         if await _is_history_page(page):
             return True
-        if await _click_text(page, SEL["history_menu"]):
+        if stuck < 3 and await _click_text(page, SEL["history_menu"]):
             await page.wait_for_load_state("domcontentloaded", timeout=config.TIMEOUT)
             await page.wait_for_timeout(1800)
             continue
@@ -258,8 +264,14 @@ async def _is_history_page(page: Page) -> bool:
 async def _is_agreement_page(page: Page) -> bool:
     if SEL["url_agreement"] in (page.url or "").lower():
         return True
+    # 内容判定: チェックボックス＋「次へ」系ボタン＋「規約」が揃うときのみ規約合意とみなす
+    # （JREID案内ページ等の誤判定を防ぐ）。
     try:
-        return await page.locator(SEL["agreement_checkbox"]).count() > 0 and await _has_text(page, ["規約", "同意"])
+        if await page.locator(SEL["agreement_checkbox"]).count() == 0:
+            return False
+        if await _find_text_locator(page, SEL["agreement_next"]) is None:
+            return False
+        return await _has_text(page, ["規約"])
     except Exception:
         return False
 
