@@ -54,9 +54,16 @@ async def start(headless: Optional[bool] = None) -> BrowserContext:
     )
     _context = await _browser.new_context(**_CONTEXT_KWARGS)
     _context.set_default_timeout(config.TIMEOUT)
-    # 「印刷」操作で OS の印刷ダイアログが開くと自動化が固まるため無効化しておく。
-    # 領収書PDFは Page.printToPDF で別途生成する。
-    await _context.add_init_script("window.print = function () {};")
+    # 初期化スクリプト:
+    #  - window.print 無効化（OS印刷ダイアログで固まるのを防止。PDFは printToPDF で生成）
+    #  - 自動化痕跡(navigator.webdriver 等)のマスク（えきねっと等のbot検知対策）
+    await _context.add_init_script(
+        "window.print = function () {};"
+        "try{Object.defineProperty(navigator,'webdriver',{get:()=>undefined});}catch(e){}"
+        "try{Object.defineProperty(navigator,'languages',{get:()=>['ja-JP','ja','en-US','en']});}catch(e){}"
+        "try{Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3,4,5]});}catch(e){}"
+        "try{window.chrome=window.chrome||{runtime:{}};}catch(e){}"
+    )
     return _context
 
 

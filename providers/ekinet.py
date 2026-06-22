@@ -97,6 +97,13 @@ async def _login(page: Page) -> None:
     print("えきねっと ログイン: 表示されたブラウザで ID・パスワードを手入力してください。")
     print("ログイン後、画面が切り替われば自動で続行します（最大5分待機）。")
     print("=" * 60)
+
+    # bot検知対策: まず eki-net トップに寄って保護用JS/cookieを通してからログインページへ。
+    try:
+        await page.goto("https://www.eki-net.com/", wait_until="domcontentloaded", timeout=config.TIMEOUT)
+        await page.wait_for_timeout(2500)
+    except Exception:
+        pass
     try:
         await page.goto(SEL["login_url"], wait_until="domcontentloaded", timeout=config.TIMEOUT)
     except Exception:
@@ -106,9 +113,17 @@ async def _login(page: Page) -> None:
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
         url = (page.url or "").lower()
+        if "error" in url:
+            await _dump(page, "ek_03_after_login")
+            raise RuntimeError(
+                "えきねっとがエラーページ（ご確認ください）を表示しました。"
+                "ボット検知の可能性があります（output/debug_ek_03_after_login.html を確認）。"
+            )
         # ログインページを離れ、パスワード欄が無くなれば「ログイン済み」とみなす
         if SEL["url_login"] not in url and not await _has_password(page):
             await page.wait_for_timeout(800)
+            if "error" in (page.url or "").lower():
+                continue
             print(f"[えきねっと] ログインを検知しました（URL: {page.url}）")
             await _dump(page, "ek_03_after_login")
             return
