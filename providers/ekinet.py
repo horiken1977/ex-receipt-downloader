@@ -527,18 +527,22 @@ async def _wait_for_atena_page(page: Page) -> None:
 
 
 async def _fill_atena(page: Page, recipient: str, seq: int) -> None:
-    """宛名入力（1行目に起動時指定の宛名）。"""
-    if not recipient:
-        return
+    """宛名入力。1行目に起動時指定の宛名、2行目（個人名）は空欄にする。"""
+    if config.DEBUG and seq == 1:
+        await _dump(page, "ek_08b_atena")
     try:
         inputs = page.locator("input[type='text']:visible")
         if await inputs.count() == 0:
             inputs = page.locator("input[type='text']")
-        if await inputs.count() > 0:
-            await inputs.first.fill(recipient)
-            print(f"[えきねっと #{seq:03d}] 宛名入力: {recipient}")
+        n = await inputs.count()
+        if n >= 1 and recipient:
+            await inputs.nth(0).fill(recipient)         # 1行目: 指定の宛名
+            print(f"[えきねっと #{seq:03d}] 宛名入力(1行目): {recipient}")
+        if n >= 2:
+            await inputs.nth(1).fill("")                # 2行目: 個人名を消す（空欄なら空欄のまま）
+            print(f"[えきねっと #{seq:03d}] 宛名2行目をクリア")
     except Exception:
-        print(f"[えきねっと #{seq:03d}] 宛名欄が見つからず（宛名なしで続行）")
+        print(f"[えきねっと #{seq:03d}] 宛名欄の操作に失敗（続行）")
 
 
 async def _issue_and_capture(page: Page, seq: int) -> Path:
