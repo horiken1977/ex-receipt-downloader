@@ -40,9 +40,9 @@ webapp.py (Web)┘   (サービスで分岐)   └─ えきねっと: providers
 | `docs/index.html` | 画面。GitHub Pages でも `webapp` でも同じものを配信。`HELPER` をオリジンで切替 |
 | `pipeline.py` | サービス種別で分岐。JR東海系は browser_manager+agents、えきねっとは `providers.ekinet.run_flow` |
 | `config.py` | サービス定義 `SERVICE_CONFIGS`、JR東海系セレクタ `SELECTORS`、利用可否・メンテ判定、各種設定 |
-| `browser_manager.py` | 単一 Chromium コンテキスト管理。`window.print` 無効化 / 自動化痕跡マスク / デバッグ保存 |
+| `browser_manager.py` | 単一 Chromium コンテキスト管理。`window.print` 無効化 / 自動化痕跡マスク / デバッグ保存（失敗時は `force` で `--debug` 無しでも保存。フレームは個別保存）|
 | `agents/login_agent.py` | JR東海: 手入力ログイン→会員メニュー到達を自動検知 |
-| `agents/discovery_agent.py` | JR東海: 会員メニュー→一覧、照会期間プルダウン設定、領収書ボタン操作、戻る、ページ送り |
+| `agents/discovery_agent.py` | JR東海: 会員メニュー→一覧、照会期間プルダウン設定、領収書ボタン操作、戻る、ページ送り。**フレームセット対応**で全フレーム横断探索 |
 | `agents/download_agent.py` | JR東海: 明細で宛名入力→印刷ポップアップを CDP printToPDF で保存 |
 | `providers/ekinet.py` | えきねっと: 実Chrome起動→CDP接続→ログイン待ち→規約/JREID→履歴→絞込→発行→DL |
 | `datetools.py` | 日本語日付の抽出・解析（全角対応、ファイル名用）|
@@ -58,6 +58,10 @@ webapp.py (Web)┘   (サービスで分岐)   └─ えきねっと: providers
    - `SERVICE_TYPE == "eki-net"` → `providers.ekinet.run_flow(...)`。
    - それ以外 → `browser_manager.start(headless=False)` → `login_agent.ensure_session` → `_download_all`。
 3. 結果（成功ファイル一覧・失敗件数）を返す。Web UI は `/status` ポーリングで進捗表示。
+   - 失敗時の診断: 一覧未到達・プルダウン未検出・例外発生などでは、`--debug` 無しでも現在の画面を
+     `output/debug_*.html`（フレームは `_frameN.html`）へ**強制保存**し、フレーム構成をログ出力する。
+   - 取得0件かつ対話実行（CLI）の場合は、**ブラウザ／Chrome を即閉じず一時停止**し、ユーザーが画面と
+     保存HTMLを確認してから閉じられるようにする（原因究明のため）。
 
 ## 5. サービス別フロー詳細
 
@@ -69,6 +73,8 @@ webapp.py (Web)┘   (サービスで分岐)   └─ えきねっと: providers
 5. 各行「領収書表示」→ 別ウィンドウ（正式な領収書）→ 宛名入力 → **CDP `Page.printToPDF`** で PDF 化。
    - 「印刷」ボタンは押すが OS ダイアログは `window.print` 無効化で抑止し、ポップアップを直接PDF化。
 6. 明細「戻る」で一覧へ戻り次へ。ページ送り対応。
+- ※ RSV_P は画面によりフレームセットを使う。一覧・照会プルダウン・領収書ボタン・メニュー文言の
+  探索とクリックは**メインフレーム→子フレームの順に全フレームを横断**する（`discovery_agent._frames`）。
 
 ### 5.2 えきねっと（JR東日本）
 1. **実 Google Chrome** を `--remote-debugging-port=9222` ＋ 専用プロファイルで通常起動（automation痕跡なし）。
@@ -76,6 +82,7 @@ webapp.py (Web)┘   (サービスで分岐)   └─ えきねっと: providers
 2. `connect_over_cdp` で接続。ユーザーがトップからログイン → 会員ページ到達を検知。
 3. 規約合意ページ: 全チェック→「次へ」 / JREIDページ:「今は登録しない」（出る方を処理）。
 4. 「JRきっぷ 確認・変更・払戻・領収書」(`data-action=TransitionToApplicationHistoryList`) → 申込履歴。
+   マイページSPAの描画前だとメニュー未出のことがあるため、描画待ちで数回リトライする。
 5. タブ「乗車／取消済の旅程」→ 表示内容「全て表示」＋ 期間 From/To年月プルダウン →「絞り込む」。
 6. 各「ご利用票兼領収書を発行する」→ 宛名入力（1行目=宛名、2行目=空欄化）→「領収書を発行する」。
    PDF が**ファイルとしてダウンロード**される（保存先＝デスクトップ、重複はChromeが連番）。
@@ -86,6 +93,8 @@ webapp.py (Web)┘   (サービスで分岐)   └─ えきねっと: providers
 - JR東海系のセレクタは `config.SELECTORS`、えきねっとは `providers/ekinet.py` の `SEL` に集約。
 - すべて「候補リスト」で上から順に試す方針。サイト仕様変更時はここだけ直す。
 - `--debug`（または Web UI のデバッグ）で各ステップの `output/debug_*.png|html` を保存し、実DOMに合わせて調整。
+- 失敗箇所（一覧未到達・プルダウン未検出・例外）では **`--debug` 無しでも該当画面を自動保存**する
+  （フレームセット時は子フレームを `_frameN.html` として個別保存）。まずこれを見て `SELECTORS`/`SEL` を直す。
 
 ## 7. ログイン・ボット対策
 
@@ -112,6 +121,10 @@ CLI 引数: `FROM [TO]` 位置引数・`--from/--to`（年月）・`--year/--mon
 
 **引数なしで実行**すると、サービス → From/To年月 → 宛名 を順に対話選択する（`--service` などを
 付けた項目はスキップ）。`--check` は照会期間・利用可否の表示のみでブラウザを起動しない。
+
+対話メニュー / Web UI のサービス選択には **`smart-ex` と `eki-net` の2つだけ**を表示する。
+`expy`（エクスプレス予約）は予約システムが `smart-ex` と共通で入口URLのみ異なるため**メニューからは隠す**が、
+`--service expy` や `SERVICE_TYPE=expy` で従来どおり利用できる（config・コードは保持）。
 
 ## 10. 拡張ガイド（新サービス追加）
 
