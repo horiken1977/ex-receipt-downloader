@@ -50,6 +50,9 @@ webapp.py (Web)┘   (サービスで分岐)   └─ えきねっと: providers
 ## 4. 実行フロー（共通）
 
 1. 入口（CLI/Web）が From/To年月・サービス・宛名・出力先・デバッグ等を決定し `config` に反映。
+   - CLI は **サービス → From/To年月 → 宛名** の順に解決し、引数で与えられなかった項目だけを
+     対話プロンプトで尋ねる（`--service` 等を付ければその項目は確認なし）。標準入力が
+     非対話（TTYでない）の場合は既定値にフォールバックする。
 2. `Pipeline.run()`:
    - JR東海系のみ利用可否（翌日〜15ヶ月）・メンテ時間（23:30〜5:30）を事前判定。
    - `SERVICE_TYPE == "eki-net"` → `providers.ekinet.run_flow(...)`。
@@ -101,8 +104,14 @@ webapp.py (Web)┘   (サービスで分岐)   └─ えきねっと: providers
 
 ## 9. 主な設定（`.env` / 環境変数 / CLI）
 
-`SERVICE_TYPE` / `RECIPIENT_NAME` / `OUTPUT_DIR` / `HEADLESS` / `TIMEOUT` / `DEBUG` / `TRAVEL_DATE_INDEX`。
-CLI は `FROM [TO]` 位置引数・`--from/--to`・`--service`・`--recipient`・`--output`・`--debug`・`--check`。
+`SERVICE_TYPE`（`smart-ex` / `expy` / `eki-net`）/ `RECIPIENT_NAME` / `OUTPUT_DIR` / `HEADLESS` /
+`TIMEOUT` / `DEBUG` / `TRAVEL_DATE_INDEX`。
+
+CLI 引数: `FROM [TO]` 位置引数・`--from/--to`（年月）・`--year/--month`・`--service`・`--recipient`・
+`--output`・`--no-headless`・`--debug`・`--check`。
+
+**引数なしで実行**すると、サービス → From/To年月 → 宛名 を順に対話選択する（`--service` などを
+付けた項目はスキップ）。`--check` は照会期間・利用可否の表示のみでブラウザを起動しない。
 
 ## 10. 拡張ガイド（新サービス追加）
 

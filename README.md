@@ -162,7 +162,7 @@ python3 main.py 2026/05 --service eki-net --recipient "株式会社○○" --deb
 
 | 変数 | 既定 | 説明 |
 |---|---|---|
-| `SERVICE_TYPE` | `smart-ex` | `smart-ex`（スマートEX）/ `expy`（エクスプレス予約） |
+| `SERVICE_TYPE` | `smart-ex` | `smart-ex`（スマートEX）/ `expy`（エクスプレス予約）/ `eki-net`（えきねっと） |
 | `RECIPIENT_NAME` | `上様` | 領収書の宛名（Web UI のフォームでも上書き可） |
 | `OUTPUT_DIR` | デスクトップ | PDF の保存先 |
 | `TRAVEL_DATE_INDEX` | `0` | 行内に複数日付がある場合にファイル名へ使う日付の番号 |
