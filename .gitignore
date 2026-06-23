@@ -13,6 +13,14 @@ __pycache__/
 .venv/
 venv/
 
+# 一時ダウンロード（領収書DL中の未完了ファイル）
+*.crdownload
+
 # OS / ローカル設定
 .DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
 .claude/settings.local.json
+# えきねっと用の実Chromeプロファイル（通常はホーム配下だが念のため）
+.ex-ekinet-chrome/
