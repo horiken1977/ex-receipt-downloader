@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-EX予約 / スマートEX 領収書ダウンロードツール
+新幹線 領収書ダウンロードツール（スマートEX / エクスプレス予約 / えきねっと）
 
-指定した月の領収書を、照会期間に「その月の初日〜末日」を入力して全件 PDF で保存します。
-PDF は既定でデスクトップに、ファイル名を個別（一意）にして保存します。
-
+指定期間（From年月〜To年月）の領収書をまとめてデスクトップに保存します。
 ログインは資格情報を保存せず、ブラウザを表示して手入力で行います。
-初回ログイン後にセッションが保存され、次回以降は自動でスキップされます。
 
 使い方:
-    python3 main.py 2024/01                  # 初回は自動でブラウザが開く→手入力ログイン
-    python3 main.py 2024 1
-    python3 main.py --year 2024 --month 1
-    python3 main.py 2024/01 --debug          # 各ステップのスクショ/HTMLを保存（セレクタ調整用）
-    python3 main.py 2024/01 --check          # 設定と照会期間の確認のみ（ブラウザを起動しない）
+    python3 main.py                          # 対話: サービス→From→To→宛名 を順に選択
+    python3 main.py 2026/05 --service eki-net # 単月・サービス指定
+    python3 main.py 2026/03 2026/05 --service smart-ex   # 期間(From To)
+    python3 main.py --from 2026/03 --to 2026/05 --recipient "株式会社○○"
+    python3 main.py 2026/05 --service expy --debug   # スクショ/HTML保存
+    python3 main.py 2026/05 --check          # 確認のみ（ブラウザを起動しない）
+
+    ※ --service を付けない場合、対話でサービスを選択します（非対話時は既定 smart-ex）。
 
 設定は .env（.env.example をコピー）または環境変数で。主なもの:
-    SERVICE_TYPE  smart-ex | expy
-    RECIPIENT_NAME  宛名（既定: 日本IBM株式会社）
+    SERVICE_TYPE  smart-ex | expy | eki-net
+    RECIPIENT_NAME  宛名
     OUTPUT_DIR（既定: デスクトップ）/ HEADLESS / DEBUG / TRAVEL_DATE_INDEX
 """
 from __future__ import annotations
@@ -70,17 +70,19 @@ def resolve_range(args) -> tuple[int, int, int, int]:
     from_s = args.from_str or args.month_str
     to_s = args.to_str or args.to_month_str
 
+    today = datetime.date.today()
     if from_s:
         fy, fm = _parse_ym(from_s)
     elif args.year and args.month:
         fy, fm = args.year, args.month
-    else:
-        today = datetime.date.today()
+    elif _is_tty():
         default = f"{today.year}/{today.month:02d}"
         raw = input(f"From年月を入力 (例: 2024/01) [{default}]: ").strip() or default
         fy, fm = _parse_ym(raw)
-        raw_to = input(f"To年月を入力 (例: 2024/03) [{fy}/{fm:02d}]: ").strip()
+        raw_to = input(f"To年月を入力（単月ならEnter） (例: 2024/03) [{fy}/{fm:02d}]: ").strip()
         to_s = raw_to or None
+    else:
+        fy, fm = today.year, today.month  # 非対話時の既定（当月）
 
     if to_s:
         ty, tm = _parse_ym(to_s)
@@ -90,10 +92,7 @@ def resolve_range(args) -> tuple[int, int, int, int]:
 
 
 def apply_overrides(args) -> None:
-    if args.service:
-        config.SERVICE_TYPE = args.service
-    if args.recipient:
-        config.RECIPIENT_NAME = args.recipient
+    """サービス/宛名以外（出力先・ヘッドレス・デバッグ）の上書き。"""
     if args.output:
         config.OUTPUT_DIR = Path(args.output).expanduser()
         config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -101,6 +100,44 @@ def apply_overrides(args) -> None:
         config.HEADLESS = False
     if args.debug:
         config.DEBUG = True
+
+
+def _is_tty() -> bool:
+    try:
+        return bool(sys.stdin and sys.stdin.isatty())
+    except Exception:
+        return False
+
+
+_SERVICE_CHOICES = {"1": "smart-ex", "2": "expy", "3": "eki-net"}
+
+
+def resolve_service(args) -> str:
+    """--service 指定があればそれ。無ければ対話選択（非対話時は既定）。"""
+    if args.service:
+        return args.service
+    if not _is_tty():
+        return config.SERVICE_TYPE
+    print("サービスを選択してください:")
+    print("  1: スマートEX（JR東海）")
+    print("  2: エクスプレス予約（JR東海）")
+    print("  3: えきねっと（JR東日本）")
+    raw = input("番号 [1]: ").strip() or "1"
+    svc = _SERVICE_CHOICES.get(raw)
+    if not svc:
+        print(f"不明な選択 {raw!r} のためスマートEXにします。")
+        svc = "smart-ex"
+    return svc
+
+
+def resolve_recipient(args) -> str:
+    """--recipient 指定があればそれ。無ければ対話入力（非対話時は既定）。"""
+    if args.recipient:
+        return args.recipient
+    if not _is_tty():
+        return config.RECIPIENT_NAME
+    raw = input(f"宛名 [{config.RECIPIENT_NAME}]: ").strip()
+    return raw or config.RECIPIENT_NAME
 
 
 def print_header(fy: int, fm: int, ty: int, tm: int) -> None:
@@ -129,8 +166,12 @@ def print_header(fy: int, fm: int, ty: int, tm: int) -> None:
 
 async def main():
     args = parse_args()
-    fy, fm, ty, tm = resolve_range(args)
     apply_overrides(args)
+
+    # 対話/引数で「サービス → From/To年月 → 宛名」を決定
+    config.SERVICE_TYPE = resolve_service(args)
+    fy, fm, ty, tm = resolve_range(args)
+    config.RECIPIENT_NAME = resolve_recipient(args)
 
     print_header(fy, fm, ty, tm)
 

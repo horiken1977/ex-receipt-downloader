@@ -80,22 +80,35 @@
 
 ## 4. 使い方（CLI）
 
+**引数なしで実行すると、画面で「サービス → From年月 → To年月 → 宛名」を順に選べます**（おすすめ）。
 ```bash
-# 設定と照会期間・利用可否の確認のみ（ブラウザを起動しない）
-python3 main.py 2026/05 --check
+python3 main.py
+#  サービスを選択してください:
+#    1: スマートEX（JR東海）
+#    2: エクスプレス予約（JR東海）
+#    3: えきねっと（JR東日本）
+#  番号 [1]:            ← 選ぶ
+#  From年月を入力 ...   ← 例 2026/03
+#  To年月を入力（単月ならEnter） ...
+#  宛名 [上様]:         ← 入力
+```
+> ※ `--service` 等を付けずに実行すると上記のように**サービスを聞かれます**（付ければ確認なしで実行）。
 
-# 通常実行（単月）：ブラウザが開く → ログイン → 会員メニュー到達で自動継続
-python3 main.py 2026/05
+引数で直接指定することもできます:
+```bash
+# 確認のみ（ブラウザを起動しない）
+python3 main.py 2026/05 --service smart-ex --check
 
-# 期間指定（From年月 〜 To年月）：From月初日〜To月末日が対象
-python3 main.py 2026/03 2026/05
-python3 main.py --from 2026/03 --to 2026/05
+# 単月 / 期間（From月初日〜To月末日）
+python3 main.py 2026/05            --service smart-ex
+python3 main.py 2026/03 2026/05    --service eki-net
+python3 main.py --from 2026/03 --to 2026/05 --service expy
 
-# 別指定・オプション
-python3 main.py 2026/05 --service expy --recipient "株式会社○○"
-python3 main.py 2026/05 --service eki-net --debug   # えきねっと
+# 宛名・デバッグ
+python3 main.py 2026/05 --service eki-net --recipient "株式会社○○" --debug
 ```
 > Windows は `python` / `py -3`、macOS/Linux は `python3` を使ってください。
+> 一番ラクなのは **Web UI**（手順3）。画面でサービス・From/To・宛名をすべて選べます。
 
 ## 対応サービス
 
