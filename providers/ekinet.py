@@ -87,19 +87,37 @@ async def run_flow(from_year: int, from_month: int, to_year: int, to_month: int,
 
         await _login(page)
         if not await _reach_history(page):
-            await _dump(page, "ek_05_history_not_reached")
-            print("[えきねっと] 申込履歴一覧に到達できませんでした。--debug の HTML を確認してください。")
+            await _log_frames(page, "履歴未到達")
+            await _dump(page, "ek_05_history_not_reached", force=True)
+            print("[えきねっと] 申込履歴一覧に到達できませんでした。"
+                  "output/debug_ek_05_history_not_reached*.html を確認してください。")
             return downloaded, failed
 
-        await _apply_filter(page, from_year, from_month, to_year, to_month)
-        downloaded, failed = await _download_receipts(
-            page, from_year, from_month, to_year, to_month, recipient
-        )
+        try:
+            await _apply_filter(page, from_year, from_month, to_year, to_month)
+            downloaded, failed = await _download_receipts(
+                page, from_year, from_month, to_year, to_month, recipient
+            )
+        except Exception as e:
+            # 予期せぬ例外（TargetClosedError 等）でも、必ず現状を保存して原因を残す。
+            print(f"[えきねっと] 絞り込み/取得中にエラー: {type(e).__name__}: {e}")
+            try:
+                await _log_frames(page, "エラー発生")
+                await _dump(page, "ek_99_error", force=True)
+            except Exception:
+                print("[えきねっと] エラー時のダンプも失敗（ページが既に閉じている可能性）。")
     finally:
         try:
             await pw.stop()
         except Exception:
             pass
+        # 取得0件かつ対話実行なら、原因確認のため Chrome を即閉じずユーザーの確認を待つ。
+        if not downloaded and _is_interactive():
+            try:
+                input("\n[一時停止] 取得0件のため Chrome を開いたままにしています。"
+                      "画面と output/debug_*.html を確認してください。Enterで Chrome を閉じます... ")
+            except Exception:
+                pass
         # 次回接続の競合を避けるため、起動したChromeを終了（プロファイルは残るのでcookieは保持）。
         if proc is not None:
             try:
@@ -266,7 +284,8 @@ async def _is_logged_in(page: Page) -> bool:
 async def _reach_history(page: Page) -> bool:
     last_url = None
     stuck = 0
-    for _ in range(12):
+    noop = 0  # 「何も該当しない」が続いた回数（SPA描画待ちの上限管理）
+    for _ in range(16):
         url = (page.url or "").lower()
         stuck = stuck + 1 if url == last_url else 0
         last_url = url
@@ -276,16 +295,24 @@ async def _reach_history(page: Page) -> bool:
         # JREID を先に判定（URLが確実）。規約合意の誤判定を避ける。
         if SEL["url_jreid"] in url or (stuck < 2 and await _is_jreid_page(page)):
             await _handle_jreid(page)
+            noop = 0
             continue
         if SEL["url_agreement"] in url or (stuck < 2 and await _is_agreement_page(page)):
             await _handle_agreement(page)
+            noop = 0
             continue
-        # マイページ等 → 申込履歴へ（data-urlkey=HistoryList が確実）
-        if stuck < 4 and await _click_history_menu(page):
+        # マイページ等 → 申込履歴へ（data-action=TransitionToApplicationHistoryList を優先）。
+        if await _click_history_menu(page):
             await page.wait_for_load_state("domcontentloaded", timeout=config.TIMEOUT)
             await page.wait_for_timeout(1800)
+            noop = 0
             continue
-        break
+        # 何も該当しない: マイページSPAの描画前に履歴メニューが未出の可能性。
+        # 数回まで待って再試行する（後からメニューが現れることがある）。
+        noop += 1
+        if noop >= 4:
+            break
+        await page.wait_for_timeout(1200)
     return await _is_history_page(page)
 
 
@@ -374,7 +401,9 @@ async def _apply_filter(page: Page, from_year: int, from_month: int,
         if await _find_text_locator(page, SEL["tab_used_cancelled"]) is not None or await _has_receipt_buttons(page):
             break
         await page.wait_for_timeout(500)
-    await _dump(page, "ek_06_history")
+    # 絞り込み前の一覧（年月プルダウン含む）は必ず保存する。ここで止まる事例があるため、
+    # --debug 無しでも現物DOMを残して原因究明できるようにする。
+    await _dump(page, "ek_06_history", force=True)
 
     # 「乗車／取消済の旅程」タブ
     await _click_text(page, SEL["tab_used_cancelled"])
@@ -703,6 +732,22 @@ def _unique_path(path: Path) -> Path:
     return parent / f"{stem}_{i}{suffix}"
 
 
-async def _dump(page: Page, name: str) -> None:
-    await browser_manager.take_debug_screenshot(page, name)
-    await browser_manager.dump_debug_html(page, name)
+async def _dump(page: Page, name: str, force: bool = False) -> None:
+    await browser_manager.take_debug_screenshot(page, name, force=force)
+    await browser_manager.dump_debug_html(page, name, force=force)
+
+
+def _is_interactive() -> bool:
+    try:
+        return bool(sys.stdin and sys.stdin.isatty())
+    except Exception:
+        return False
+
+
+async def _log_frames(page: Page, label: str) -> None:
+    """失敗診断用に、現在のフレーム構成（URL）を出力する。"""
+    try:
+        urls = [f.url for f in page.frames]
+    except Exception:
+        urls = []
+    print(f"[えきねっと] {label}: フレーム数={len(urls)} -> " + " | ".join(urls))

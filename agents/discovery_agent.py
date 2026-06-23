@@ -9,15 +9,20 @@
     onclick="jmpsel=i; cfEXPY_doAction('RSWP360AIDP043')"> で、押すと同一ページが
     明細へ遷移する（ポップアップではない）。そのため1件ごとに一覧へ戻る必要がある。
 
+フレームセット対策: RSV_P は画面によってフレームセットを使い、一覧や照会プルダウンが
+子フレーム内に置かれることがある。`page.locator` はメインフレームしか探さないため、
+要素の探索・クリックは「メインフレーム→各子フレーム」の順に全フレームを横断する
+（`_frames()`）。最初に見つかったフレーム上で操作する。
+
 セレクタは config.SELECTORS に集約。
 """
 from __future__ import annotations
 
 import calendar
 import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
-from playwright.async_api import Page
+from playwright.async_api import Frame, Page
 
 import browser_manager
 import config
@@ -40,10 +45,11 @@ async def open_and_filter(page: Page, from_year: int, from_month: int,
     """会員メニュー→一覧へ到達し、From年月初日〜To年月末日をプルダウンで選んで照会する。"""
     reached = await _navigate_to_list(page)
     if not reached:
-        await browser_manager.take_debug_screenshot(page, "04b_list_not_reached")
-        await browser_manager.dump_debug_html(page, "04b_list_not_reached")
-        print("[Discovery] 一覧画面に到達できませんでした。--debug の HTML を確認し "
-              "SELECTORS['menu_receipt_link'] を調整してください。")
+        await _log_frames(page, "一覧未到達")
+        await browser_manager.take_debug_screenshot(page, "04b_list_not_reached", force=True)
+        await browser_manager.dump_debug_html(page, "04b_list_not_reached", force=True)
+        print("[Discovery] 一覧画面に到達できませんでした。output/debug_04b_list_not_reached*.html "
+              "を確認し SELECTORS['menu_receipt_link'] を調整してください。")
 
     print(f"[Discovery] 照会対象: {from_year}年{from_month:02d}月 〜 {to_year}年{to_month:02d}月")
     await _set_date_filter(page, from_year, from_month, to_year, to_month)
@@ -53,21 +59,21 @@ async def open_and_filter(page: Page, from_year: int, from_month: int,
 
 async def count_receipts(page: Page) -> int:
     """現在の一覧ページにある「領収書表示」ボタン数。"""
-    sel = await _winning_button_selector(page)
+    fr, sel = await _winning_button(page)
     if sel is None:
         return 0
     try:
-        return await page.locator(sel).count()
+        return await fr.locator(sel).count()
     except Exception:
         return 0
 
 
 async def click_receipt(page: Page, index: int) -> bool:
     """一覧の index 番目の「領収書表示」を押して明細へ遷移する。"""
-    sel = await _winning_button_selector(page)
+    fr, sel = await _winning_button(page)
     if sel is None:
         return False
-    buttons = page.locator(sel)
+    buttons = fr.locator(sel)
     if await buttons.count() <= index:
         return False
     await buttons.nth(index).click()
@@ -101,17 +107,37 @@ async def return_to_list(page: Page, from_year: int, from_month: int,
 
 
 async def go_to_next_page(page: Page) -> bool:
-    for sel in config.SELECTORS["pager_next"]:
-        try:
-            el = page.locator(sel).first
-            if await el.count() > 0 and await el.is_enabled():
-                await el.click()
-                await page.wait_for_load_state("domcontentloaded", timeout=config.TIMEOUT)
-                await page.wait_for_timeout(1200)
-                return True
-        except Exception:
-            continue
+    for fr in _frames(page):
+        for sel in config.SELECTORS["pager_next"]:
+            try:
+                el = fr.locator(sel).first
+                if await el.count() > 0 and await el.is_enabled():
+                    await el.click()
+                    await page.wait_for_load_state("domcontentloaded", timeout=config.TIMEOUT)
+                    await page.wait_for_timeout(1200)
+                    return True
+            except Exception:
+                continue
     return False
+
+
+# --- フレーム横断ヘルパー --------------------------------------------------
+def _frames(page: Page) -> List[Frame]:
+    """探索対象フレームを「メインフレーム→子フレーム」の順で返す（フレームセット対応）。"""
+    try:
+        frames = list(page.frames)  # frames[0] がメインフレーム
+        return frames if frames else [page.main_frame]
+    except Exception:
+        return [page.main_frame]
+
+
+async def _log_frames(page: Page, label: str) -> None:
+    """失敗診断用に、現在のフレーム構成（URL）を出力する。"""
+    try:
+        urls = [f.url for f in page.frames]
+    except Exception:
+        urls = []
+    print(f"[Discovery] {label}: フレーム数={len(urls)} -> " + " | ".join(urls))
 
 
 # --- 一覧への到達 ---------------------------------------------------------
@@ -127,11 +153,17 @@ async def _navigate_to_list(page: Page) -> bool:
     if not clicked:
         action = config.get_service_config().get("receipt_menu_action")
         if action:
-            try:
-                await page.evaluate(f"cfEXPY_doAction('{action}')")
-                clicked = True
-            except Exception as e:
-                print(f"[Discovery] メニューJSアクション失敗: {e}")
+            # cfEXPY_doAction が定義されているフレームで実行する。
+            for fr in _frames(page):
+                try:
+                    if await fr.evaluate("typeof cfEXPY_doAction === 'function'"):
+                        await fr.evaluate(f"cfEXPY_doAction('{action}')")
+                        clicked = True
+                        break
+                except Exception:
+                    continue
+            if not clicked:
+                print(f"[Discovery] メニューJSアクションを実行できませんでした（cfEXPY_doAction 未検出）")
     if clicked:
         await page.wait_for_load_state("domcontentloaded", timeout=config.TIMEOUT)
         await page.wait_for_timeout(1800)
@@ -158,16 +190,17 @@ async def _is_list_page(page: Page) -> bool:
 
 async def _has_month_pulldown(page: Page) -> bool:
     import re as _re
-    selects = page.locator("select")
-    try:
-        n = await selects.count()
-    except Exception:
-        return False
-    for i in range(n):
-        for o in await _option_texts(selects.nth(i)):
-            no = datetools.normalize(o)
-            if _re.search(r"20\d{2}", no) or "年" in no or "月" in no:
-                return True
+    for fr in _frames(page):
+        try:
+            selects = fr.locator("select")
+            n = await selects.count()
+        except Exception:
+            continue
+        for i in range(n):
+            for o in await _option_texts(selects.nth(i)):
+                no = datetools.normalize(o)
+                if _re.search(r"20\d{2}", no) or "年" in no or "月" in no:
+                    return True
     return False
 
 
@@ -178,25 +211,38 @@ async def _set_date_filter(page: Page, from_year: int, from_month: int,
 
     実サイト: sel-1=From年月, sel-2=From日, sel-3=To年月, sel-4=To日。
     名前に依存せず、選択肢の内容で「年月select」「日select」を判別し、出現順に
-    From→To として設定する。
+    From→To として設定する。プルダウンが子フレームにある場合に備え、全フレームを
+    横断して「年月select を持つフレーム」を採用する。
     """
     from_ym = f"{from_year}年{from_month}月"
     to_ym = f"{to_year}年{to_month}月"
     last = calendar.monthrange(to_year, to_month)[1]
 
-    selects = page.locator("select")
-    n = await selects.count()
+    # 年月select を含むフレームを探す（無ければ最後に走査したフレームを使う）。
+    target_fr: Optional[Frame] = None
+    selects = None
     ym_idx: List[int] = []
     day_idx: List[int] = []
-    for i in range(n):
-        joined = "".join(await _option_texts(selects.nth(i)))
-        if "年" in joined and "月" in joined:
-            ym_idx.append(i)
-        elif "日" in joined:
-            day_idx.append(i)
+    for fr in _frames(page):
+        try:
+            s = fr.locator("select")
+            n = await s.count()
+        except Exception:
+            continue
+        yi: List[int] = []
+        di: List[int] = []
+        for i in range(n):
+            joined = "".join(await _option_texts(s.nth(i)))
+            if "年" in joined and "月" in joined:
+                yi.append(i)
+            elif "日" in joined:
+                di.append(i)
+        if yi:  # 年月プルダウンがあるフレームを採用して打ち切る
+            target_fr, selects, ym_idx, day_idx = fr, s, yi, di
+            break
 
     done = False
-    if len(ym_idx) >= 2 and len(day_idx) >= 2:
+    if selects is not None and len(ym_idx) >= 2 and len(day_idx) >= 2:
         a = await _select_label(selects.nth(ym_idx[0]), from_ym)        # From 年月
         b = await _select_label(selects.nth(day_idx[0]), "1日")          # From 日
         c = await _select_label(selects.nth(ym_idx[1]), to_ym)          # To 年月
@@ -204,16 +250,18 @@ async def _set_date_filter(page: Page, from_year: int, from_month: int,
         done = a and b and c and d
         if done:
             print(f"[Discovery] 照会期間設定: {from_ym}1日 〜 {to_ym}{last}日")
-    elif ym_idx:
+    elif selects is not None and ym_idx:
         done = await _select_label(selects.nth(ym_idx[0]), from_ym)
 
     if not done:
-        await browser_manager.dump_debug_html(page, "05a_filter_not_found")
-        await browser_manager.take_debug_screenshot(page, "05a_filter_not_found")
+        await _log_frames(page, "プルダウン未検出")
+        await browser_manager.dump_debug_html(page, "05a_filter_not_found", force=True)
+        await browser_manager.take_debug_screenshot(page, "05a_filter_not_found", force=True)
         print("[Discovery] 照会期間プルダウンを設定できませんでした。"
-              "debug_05a_filter_not_found.html を確認してください。")
+              "output/debug_05a_filter_not_found*.html を確認してください。")
 
-    await _click_first_text(page, config.SELECTORS["filter_submit_texts"])
+    # 「再検索」は同じフレーム（無ければ全フレーム）で押す。
+    await _click_first_text(target_fr or page, config.SELECTORS["filter_submit_texts"])
     await page.wait_for_load_state("domcontentloaded", timeout=config.TIMEOUT)
     await page.wait_for_timeout(2000)
 
@@ -240,59 +288,70 @@ async def _option_texts(select) -> List[str]:
 
 
 # --- helpers --------------------------------------------------------------
-async def _winning_button_selector(page: Page) -> Optional[str]:
-    for sel in config.SELECTORS["receipt_button"]:
-        try:
-            if await page.locator(sel).count() > 0:
-                return sel
-        except Exception:
-            continue
-    return None
+async def _winning_button(page: Page) -> Tuple[Optional[Frame], Optional[str]]:
+    """「領収書表示」ボタンを持つ (フレーム, セレクタ) を返す。無ければ (None, None)。"""
+    for fr in _frames(page):
+        for sel in config.SELECTORS["receipt_button"]:
+            try:
+                if await fr.locator(sel).count() > 0:
+                    return fr, sel
+            except Exception:
+                continue
+    return None, None
 
 
 async def _has_receipt_buttons(page: Page) -> bool:
-    return await _winning_button_selector(page) is not None
+    _, sel = await _winning_button(page)
+    return sel is not None
 
 
 async def _has_date_filter(page: Page) -> bool:
-    for kw in config.SELECTORS["filter_start_keywords"]:
-        for attr in ("name", "id", "placeholder"):
+    for fr in _frames(page):
+        for kw in config.SELECTORS["filter_start_keywords"]:
+            for attr in ("name", "id", "placeholder"):
+                try:
+                    if await fr.locator(f"input[{attr}*='{kw}']").count() > 0:
+                        return True
+                except Exception:
+                    continue
+    return False
+
+
+async def _click_by_text(root, texts: List[str]) -> bool:
+    """テキスト一致するリンク/ボタン/タイルを上から順に1つだけクリックする。
+
+    root には Page または Frame を渡せる。Page の場合は全フレームを横断して探す。
+    """
+    roots = _frames(root) if isinstance(root, Page) else [root]
+    for fr in roots:
+        for text in texts:
             try:
-                if await page.locator(f"input[{attr}*='{kw}']").count() > 0:
+                link = fr.get_by_role("link", name=text)
+                if await link.count() == 0:
+                    link = fr.locator(
+                        f"a:has-text('{text}'), button:has-text('{text}'), "
+                        f"input[type='submit'][value*='{text}'], input[type='button'][value*='{text}']"
+                    )
+                if await link.count() == 0:
+                    link = fr.get_by_text(text, exact=False)
+                if await link.count() > 0:
+                    await link.first.click()
                     return True
             except Exception:
                 continue
     return False
 
 
-async def _click_by_text(page: Page, texts: List[str]) -> bool:
-    """テキスト一致するリンク/ボタン/タイルを上から順に1つだけクリック。"""
-    for text in texts:
+async def _click_first_text(root, texts: List[str]) -> bool:
+    if await _click_by_text(root, texts):
+        return True
+    roots = _frames(root) if isinstance(root, Page) else [root]
+    for fr in roots:
         try:
-            link = page.get_by_role("link", name=text)
-            if await link.count() == 0:
-                link = page.locator(
-                    f"a:has-text('{text}'), button:has-text('{text}'), "
-                    f"input[type='submit'][value*='{text}'], input[type='button'][value*='{text}']"
-                )
-            if await link.count() == 0:
-                link = page.get_by_text(text, exact=False)
-            if await link.count() > 0:
-                await link.first.click()
+            el = fr.locator("input[type='submit'], button[type='submit']").first
+            if await el.count() > 0:
+                await el.click()
                 return True
         except Exception:
             continue
-    return False
-
-
-async def _click_first_text(page: Page, texts: List[str]) -> bool:
-    if await _click_by_text(page, texts):
-        return True
-    try:
-        el = page.locator("input[type='submit'], button[type='submit']").first
-        if await el.count() > 0:
-            await el.click()
-            return True
-    except Exception:
-        pass
     return False

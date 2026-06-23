@@ -93,8 +93,9 @@ async def stop() -> None:
         _playwright = None
 
 
-async def take_debug_screenshot(page: Page, name: str) -> None:
-    if config.DEBUG:
+async def take_debug_screenshot(page: Page, name: str, force: bool = False) -> None:
+    """スクショを保存する。通常は --debug 時のみ。force=True なら失敗解析用に常時保存。"""
+    if config.DEBUG or force:
         path = config.DEBUG_DIR / f"debug_{name}.png"
         try:
             await page.screenshot(path=str(path), full_page=True)
@@ -103,13 +104,30 @@ async def take_debug_screenshot(page: Page, name: str) -> None:
             print(f"[DEBUG] スクリーンショット失敗 ({name}): {e}")
 
 
-async def dump_debug_html(page: Page, name: str) -> None:
-    """セレクタ調整用に現在ページの HTML を保存する（--debug 時のみ）。"""
-    if config.DEBUG:
-        path = config.DEBUG_DIR / f"debug_{name}.html"
+async def dump_debug_html(page: Page, name: str, force: bool = False) -> None:
+    """セレクタ調整用に現在ページの HTML を保存する。通常は --debug 時のみ。
+
+    force=True なら失敗解析用に --debug 無しでも保存する（フレームセットの場合は
+    各子フレームの HTML も `_frameN` として併せて保存する）。
+    """
+    if not (config.DEBUG or force):
+        return
+    path = config.DEBUG_DIR / f"debug_{name}.html"
+    try:
+        html = await page.content()
+        path.write_text(html, encoding="utf-8")
+        print(f"[DEBUG] HTML保存: {path}")
+    except Exception as e:
+        print(f"[DEBUG] HTML保存失敗 ({name}): {e}")
+    # フレームセット対策: 子フレームの中身も個別に保存（一覧/プルダウンが子フレームに
+    # ある場合、トップの HTML だけでは中身が分からないため）。
+    try:
+        frames = [f for f in page.frames if f is not page.main_frame]
+    except Exception:
+        frames = []
+    for i, fr in enumerate(frames):
         try:
-            html = await page.content()
-            path.write_text(html, encoding="utf-8")
-            print(f"[DEBUG] HTML保存: {path}")
-        except Exception as e:
-            print(f"[DEBUG] HTML保存失敗 ({name}): {e}")
+            fhtml = await fr.content()
+            (config.DEBUG_DIR / f"debug_{name}_frame{i}.html").write_text(fhtml, encoding="utf-8")
+        except Exception:
+            continue

@@ -8,11 +8,19 @@
 """
 from __future__ import annotations
 
+import sys
 from typing import List
 
 import browser_manager
 import config
 from agents import discovery_agent, download_agent, login_agent
+
+
+def _is_interactive() -> bool:
+    try:
+        return bool(sys.stdin and sys.stdin.isatty())
+    except Exception:
+        return False
 
 
 class Pipeline:
@@ -53,6 +61,14 @@ class Pipeline:
             page = await login_agent.ensure_session(self.service_cfg)
             await self._download_all(page)
         finally:
+            # 1件も取得できなかった場合は、原因確認のためブラウザを即閉じない。
+            # 対話実行ならユーザーが画面を確認してから Enter で閉じられるようにする。
+            if not self.downloaded and _is_interactive():
+                try:
+                    input("\n[一時停止] 取得0件のためブラウザを開いたままにしています。"
+                          "画面を確認し、output/debug_*.html も保存済みです。Enterで閉じます... ")
+                except Exception:
+                    pass
             await browser_manager.stop()
         return self._result()
 
