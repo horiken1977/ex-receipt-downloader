@@ -28,7 +28,7 @@
 </head>
 <body>
 <h1>🚄 新幹線 領収書ダウンロード <span id="state"></span></h1>
-<p class="sub">指定期間の領収書をまとめてデスクトップに保存します（スマートEX / エクスプレス予約 / えきねっと）。</p>
+<p class="sub">指定期間の領収書をまとめてデスクトップに保存します（スマートEX / えきねっと）。</p>
 
 <div id="banner"></div>
 
@@ -46,7 +46,6 @@
  <label>サービス</label>
  <select id="service">
   <option value="smart-ex">スマートEX</option>
-  <option value="expy">エクスプレス予約</option>
   <option value="eki-net">えきねっと（JR東日本）</option>
  </select>
  <div class="ck"><input type="checkbox" id="debug"><label for="debug" style="margin:0;font-weight:400">デバッグ（各ステップのスクショ/HTMLを保存）</label></div>
@@ -54,7 +53,7 @@
  <div class="note">
   実行すると<b>お使いのPCにブラウザが開きます</b>。会員ID・パスワード（必要に応じSMS認証）を手入力してログインしてください。
   ログイン後は自動で進み、<b>From年月〜To年月</b>の領収書をすべて<b>デスクトップ</b>に保存します（単月は From と To を同じに）。<br>
-  ・スマートEX / エクスプレス予約（JR東海）: 宛名を入力して領収書を表示し PDF 化。<b>23:30〜5:30 はメンテで利用不可</b>。<br>
+  ・スマートEX（JR東海）: 宛名を入力して領収書を表示し PDF 化。<b>23:30〜5:30 はメンテで利用不可</b>。<br>
   ・えきねっと（JR東日本）: Akamai 対策のため<b>実 Google Chrome</b> が起動します（要 Chrome）。宛名は1行目に入力。<br>
   ※ ログイン情報は保存しません。
  </div>

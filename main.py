@@ -109,7 +109,9 @@ def _is_tty() -> bool:
         return False
 
 
-_SERVICE_CHOICES = {"1": "smart-ex", "2": "expy", "3": "eki-net"}
+# 対話メニューに出すサービス（エクスプレス予約 expy は予約システムがスマートEXと
+# 共通で入口URLだけが違うため、メニューからは隠す。`--service expy` では引き続き使える）。
+_SERVICE_CHOICES = {"1": "smart-ex", "2": "eki-net"}
 
 
 def resolve_service(args) -> str:
@@ -120,8 +122,7 @@ def resolve_service(args) -> str:
         return config.SERVICE_TYPE
     print("サービスを選択してください:")
     print("  1: スマートEX（JR東海）")
-    print("  2: エクスプレス予約（JR東海）")
-    print("  3: えきねっと（JR東日本）")
+    print("  2: えきねっと（JR東日本）")
     raw = input("番号 [1]: ").strip() or "1"
     svc = _SERVICE_CHOICES.get(raw)
     if not svc:
