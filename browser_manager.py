@@ -9,7 +9,9 @@ JR系サイトはサーバ側に画面遷移状態を持つため、単一コン
 """
 from __future__ import annotations
 
-from typing import Optional
+import asyncio
+from typing import List, Optional
+from urllib.parse import urlparse
 
 from playwright.async_api import (
     async_playwright,
@@ -25,6 +27,8 @@ _playwright: Optional[Playwright] = None
 _browser: Optional[Browser] = None
 _context: Optional[BrowserContext] = None
 _headless: bool = True
+_primary_page: Optional[Page] = None
+_popup_guard_domains: List[str] = []
 
 _CONTEXT_KWARGS = dict(
     viewport={"width": 1280, "height": 900},
@@ -80,8 +84,77 @@ async def new_page() -> Page:
     return await context().new_page()
 
 
+def set_primary_page(page: Page) -> None:
+    """自動操作の主タブを記録する。想定外タブを閉じた後、ここへフォーカスを戻す。"""
+    global _primary_page
+    _primary_page = page
+
+
+def guard_unexpected_popups(allowed_domains: List[str]) -> None:
+    """許可ドメイン以外の新規タブを検知し、自動で閉じて主タブへフォーカスを戻す。
+
+    JR東海系サイトはログイン後の会員メニュー等で、サイト側の広告/案内リンクが
+    `target=_blank` で外部サイト（例: JR CYBER STATION）を新規タブとして自動で
+    開くことがある。開いたタブが前面に出ると自動操作中の主タブがバックグラウンド
+    化し、Chromium のバックグラウンドタブ抑制でログイン検知や以降のクリック操作が
+    不安定になる。印刷ポップアップ（正式な領収書, 同一ドメイン）は誤って閉じない
+    よう、URL が確定するまで待ってからドメイン判定する。
+    """
+    global _popup_guard_domains
+    _popup_guard_domains = list(allowed_domains)
+    if _context is None or not _popup_guard_domains:
+        return
+
+    def _on_new_page(new_page: Page) -> None:
+        asyncio.create_task(_maybe_close_unexpected_popup(new_page, list(_popup_guard_domains)))
+
+    _context.on("page", _on_new_page)
+
+
+def _is_allowed_domain(url: str, allowed_domains: List[str]) -> bool:
+    try:
+        host = urlparse(url).hostname or ""
+    except Exception:
+        host = ""
+    if not host:
+        # about:blank 等、URL 未確定の間は判定しない（正規ポップアップの誤クローズ防止）
+        return True
+    return any(host == d or host.endswith("." + d) for d in allowed_domains)
+
+
+async def _maybe_close_unexpected_popup(new_page: Page, allowed_domains: List[str]) -> None:
+    url = ""
+    for _ in range(20):  # 約8秒、URL確定を待つ（0.4s刻み）
+        try:
+            if new_page.is_closed():
+                return
+        except Exception:
+            return
+        try:
+            url = new_page.url
+        except Exception:
+            url = ""
+        if url and url != "about:blank":
+            break
+        await asyncio.sleep(0.4)
+
+    if _is_allowed_domain(url, allowed_domains):
+        return
+
+    print(f"[Guard] 想定外のタブを検知したため閉じます: {url}")
+    try:
+        await new_page.close()
+    except Exception:
+        pass
+    if _primary_page is not None:
+        try:
+            await _primary_page.bring_to_front()
+        except Exception:
+            pass
+
+
 async def stop() -> None:
-    global _playwright, _browser, _context
+    global _playwright, _browser, _context, _primary_page, _popup_guard_domains
     if _context:
         await _context.close()
         _context = None
@@ -91,6 +164,8 @@ async def stop() -> None:
     if _playwright:
         await _playwright.stop()
         _playwright = None
+    _primary_page = None
+    _popup_guard_domains = []
 
 
 async def take_debug_screenshot(page: Page, name: str, force: bool = False) -> None:

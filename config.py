@@ -71,6 +71,37 @@ def get_service_config() -> dict:
     return SERVICE_CONFIGS.get(SERVICE_TYPE, SERVICE_CONFIGS["smart-ex"])
 
 
+# 日本の共有第2レベルドメイン（co.jp 等）。registrable domain 抽出時、これらの
+# 直前のラベルまで含めないと "co.jp" のような広すぎるドメインになってしまう。
+_JP_SHARED_SUFFIXES = {"co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp", "gr.jp", "ed.jp", "ad.jp"}
+
+
+def _registrable_domain(host: str) -> str:
+    parts = host.split(".")
+    if len(parts) >= 3 and ".".join(parts[-2:]) in _JP_SHARED_SUFFIXES:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:]) if len(parts) >= 2 else host
+
+
+def popup_allowed_domains(service_cfg: dict) -> list[str]:
+    """会員メニュー到達後にサイトが自動で開く想定外タブ（広告/案内等の外部リンク）を
+    判別するための許可ドメイン一覧。login_url / base_url のホストから
+    registrable domain（例: shinkansen2.jr-central.co.jp → jr-central.co.jp）を抽出する。
+    印刷ポップアップ（正式な領収書）は同ドメインなので誤って閉じない。
+    """
+    from urllib.parse import urlparse
+
+    domains: set[str] = set()
+    for key in ("login_url", "base_url"):
+        try:
+            host = urlparse(service_cfg.get(key, "")).hostname or ""
+        except Exception:
+            host = ""
+        if host:
+            domains.add(_registrable_domain(host))
+    return sorted(domains)
+
+
 # --- セレクタ集約 ---------------------------------------------------------
 # すべて「候補リスト」。上から順に試し、最初に一致したものを使う。
 # 実サイトで動かして調整する想定。--debug で各ステップの HTML/スクショを出力する。

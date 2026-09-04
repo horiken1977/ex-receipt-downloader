@@ -100,6 +100,11 @@ webapp.py (Web)┘   (サービスで分岐)   └─ えきねっと: providers
 
 - 資格情報は保存しない。ログインは常に手入力。
 - JR東海: 会員メニュー到達をポーリング検知（最大5分）。`window.print` 無効化＋`navigator.webdriver` 等のマスク。
+- JR東海: サイトが広告/案内リンク（例: JR CYBER STATION）を新規タブで自動的に開くことがあり、
+  前面に出ると主タブがバックグラウンド化して不安定になるため、ログイン許可ドメイン
+  （`jr-central.co.jp`）以外の新規タブは自動で閉じて主タブへフォーカスを戻す
+  （`browser_manager.guard_unexpected_popups` / `config.popup_allowed_domains`）。
+  印刷ポップアップ（正式な領収書, 同ドメイン）は URL 確定を待ってから判定するため誤って閉じない。
 - えきねっと: Playwright Chromium だと Akamai に `Access Denied`。**実Chromeに CDP 接続**することで
   「普通のブラウザ」として通す。深いURLへの `goto` を避け、クリックで遷移。
 

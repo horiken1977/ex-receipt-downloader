@@ -31,6 +31,11 @@ async def ensure_session(service_cfg: dict) -> Page:
         await page.close()
         raise LoginError("ログインには画面表示が必要です（ヘッドレス不可）。")
 
+    # サイトが広告/案内等の外部リンクを新規タブで自動的に開くことがあり、前面に出ると
+    # 自動操作中の主タブがバックグラウンド化して不安定になる。想定外タブは自動で閉じる。
+    browser_manager.set_primary_page(page)
+    browser_manager.guard_unexpected_popups(config.popup_allowed_domains(service_cfg))
+
     try:
         await page.goto(service_cfg["login_url"], wait_until="domcontentloaded", timeout=config.TIMEOUT)
     except Exception:
