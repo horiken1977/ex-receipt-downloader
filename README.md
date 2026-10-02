@@ -137,11 +137,13 @@ python3 main.py 2026/05 --service eki-net --recipient "株式会社○○" --deb
 （実行は各自PCのヘルパーが担当）。
 
 1. リポジトリを push 後、**Settings → Pages → Source: Deploy from a branch → `main` / `/docs`** を保存。
-2. 各PCで **ヘルパーを起動**（手順3-1）。
-3. 公開URLを **Chrome** で開く → 「✅ ローカルヘルパー稼働中」と出れば実行できます。
+2. 各PCの `.env` に、自分の Pages のオリジンを書く：`EXRECEIPT_PAGES_ORIGIN=https://<ユーザー名>.github.io`
+   （書かないとヘルパーは Pages からの呼び出しを受け付けません）。
+3. 各PCで **ヘルパーを起動**（手順3-1）。
+4. 公開URLを **Chrome** で開く → 「✅ ローカルヘルパー稼働中」と出れば実行できます。
 
-> ヘルパーは `127.0.0.1` のみで待ち受け、許可するのは自分の `*.github.io` と `localhost`
-> だけです（CORS / Private Network Access で制限）。**Chrome 推奨**（Safari はローカル接続を
+> ヘルパーは `127.0.0.1` のみで待ち受け、許可するのは `localhost` と、`EXRECEIPT_PAGES_ORIGIN`
+> で指定した自分の Pages だけです（完全一致。CORS / Private Network Access で制限）。**Chrome 推奨**（Safari はローカル接続を
 > ブロックする場合があります）。`localhost:8765` を直接開くだけなら GitHub の設定は不要です。
 
 ---

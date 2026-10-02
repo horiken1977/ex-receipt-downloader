@@ -34,16 +34,20 @@ _lock = threading.Lock()
 
 # --- CORS / Private Network Access -----------------------------------------
 # GitHub Pages(https) の画面からローカルヘルパー(http://127.0.0.1) を呼べるようにする。
-# 許可オリジンは github.io と localhost のみ（無関係なサイトからの実行を防ぐ）。
+# 許可オリジンは localhost と、EXRECEIPT_PAGES_ORIGIN で指定した自分の Pages だけ
+# （完全一致。他人の *.github.io など無関係なサイトからの実行を防ぐ）。
 # macOS の AirPlay レシーバーがポート5000を占有するため 8765 を使う。
 PORT = int(os.getenv("EXRECEIPT_PORT", "8765"))
+PAGES_ORIGIN = os.getenv("EXRECEIPT_PAGES_ORIGIN", "").strip().rstrip("/")
 
 
 def _origin_allowed(origin: str) -> bool:
     if not origin:
         return False
-    return (origin.endswith(".github.io")
-            or origin in (f"http://localhost:{PORT}", f"http://127.0.0.1:{PORT}"))
+    allowed = {f"http://localhost:{PORT}", f"http://127.0.0.1:{PORT}"}
+    if PAGES_ORIGIN:
+        allowed.add(PAGES_ORIGIN)
+    return origin in allowed
 
 
 @app.before_request
@@ -51,6 +55,11 @@ def _handle_preflight():
     from flask import request as _rq
     if _rq.method == "OPTIONS":
         return ("", 204)
+    # フォーム形式の POST はプリフライトなしで届くため、CORS ヘッダーだけでは実行を止められない。
+    # 許可していないオリジンからの POST はここで断る（Origin の無い手元の呼び出しは通す）。
+    origin = _rq.headers.get("Origin", "")
+    if _rq.method == "POST" and origin and not _origin_allowed(origin):
+        return (jsonify({"error": "許可されていない画面からの呼び出しです"}), 403)
 
 
 @app.after_request

@@ -36,7 +36,7 @@ webapp.py (Web)┘   (サービスで分岐)   └─ えきねっと: providers
 | ファイル | 役割 |
 |---|---|
 | `main.py` | CLI。引数解釈（From/To・--service 等）→ `Pipeline` 実行 |
-| `webapp.py` | ローカル Web サーバ（Flask）。フォーム受付→別スレッドで `Pipeline` 実行→進捗をJSONで返す。CORS/Private Network Access 対応（GitHub Pages からの呼び出し許可）|
+| `webapp.py` | ローカル Web サーバ（Flask）。フォーム受付→別スレッドで `Pipeline` 実行→進捗をJSONで返す。CORS/Private Network Access 対応（許可は localhost と `EXRECEIPT_PAGES_ORIGIN` で指定した自分の Pages だけ。完全一致）|
 | `docs/index.html` | 画面。GitHub Pages でも `webapp` でも同じものを配信。`HELPER` をオリジンで切替 |
 | `pipeline.py` | サービス種別で分岐。JR東海系は browser_manager+agents、えきねっとは `providers.ekinet.run_flow` |
 | `config.py` | サービス定義 `SERVICE_CONFIGS`、JR東海系セレクタ `SELECTORS`、利用可否・メンテ判定、各種設定 |
